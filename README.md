@@ -1,6 +1,10 @@
 # powston_script
 Decision script for Powston Inverter Intelligence @ https://powston.com.au
 
+# Installation
+
+Adjust user variables (https://github.com/rbollar/powston_script/wiki/User-Variables) and upload through the Powston App.
+
 # Change Log
 
 Initial commit.
