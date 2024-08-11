@@ -26,4 +26,4 @@ jobs:
       env:
         POWSTON_API_KEY: ${{ secrets.POWSTON_API_KEY }}
       run: |
-        nose2
+        python -m nose2
