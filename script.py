@@ -11,8 +11,32 @@ always_sell_price = 100.0  # The price to sell (Export) regardless of remaining 
 
 # Forecast Adjustments
 # Minimum house power usage to accept in the forecast (in Wh) in the event reported house_power is missing
-min_house_power = 2000.0  # This will be divided by the number of inverters below
-
+min_house_power = [
+    1500.0,  # 12:00 AM - 1:00 AM
+    1500.0,  # 1:00 AM - 2:00 AM
+    1500.0,  # 2:00 AM - 3:00 AM
+    1500.0,  # 3:00 AM - 4:00 AM
+    1500.0,  # 4:00 AM - 5:00 AM
+    2000.0,  # 5:00 AM - 6:00 AM
+    2000.0,  # 6:00 AM - 7:00 AM
+    2500.0,  # 7:00 AM - 8:00 AM
+    3000.0,  # 8:00 AM - 9:00 AM
+    3500.0,  # 9:00 AM - 10:00 AM
+    4000.0,  # 10:00 AM - 11:00 AM
+    4500.0,  # 11:00 AM - 12:00 PM
+    5000.0,  # 12:00 PM - 1:00 PM
+    5500.0,  # 1:00 PM - 2:00 PM
+    5000.0,  # 2:00 PM - 3:00 PM
+    4500.0,  # 3:00 PM - 4:00 PM
+    4000.0,  # 4:00 PM - 5:00 PM
+    3500.0,  # 5:00 PM - 6:00 PM
+    3000.0,  # 6:00 PM - 7:00 PM
+    2500.0,  # 7:00 PM - 8:00 PM
+    2000.0,  # 8:00 PM - 9:00 PM
+    1500.0,  # 9:00 PM - 10:00 PM
+    1500.0,  # 10:00 PM - 11:00 PM
+    1500.0   # 11:00 PM - 12:00 AM
+]
 # Compounding discount to buy and sell forecast. For each additional future period, buy price increases by x% / sell decreases by x%.
 uncertainty_discount = 0.05  # 0.05 is 5% per hour. Larger values are more conservative.
 
@@ -110,8 +134,9 @@ index_lowest_buy = buy_forecast.index(min(buy_forecast))
 # Calculate the time until the lowest buy price
 hours_until_lowest_buy = index_lowest_buy
 
-# Ensure house power is at least min_house_power divided by number of inverters
-effective_house_power = max(house_power / num_inverters, min_house_power / num_inverters)
+# Ensure house power is at least min_house_power for the current hour divided by the number of inverters
+current_hour = local_time.hour
+effective_house_power = max(house_power / num_inverters, min_house_power[current_hour] / num_inverters)
 
 # Estimate power consumption until the lowest buy price period
 estimated_consumption_kW = effective_house_power * hours_until_lowest_buy
