@@ -18,7 +18,7 @@ class TestUserScript(unittest.TestCase):
             self.fail("POWSTON_API_KEY environment variable is not set")
             return
 
-        powston_test_server = os.getenv("POWSTON_TEST_SERVER", 'https://dev.inverterintelligence.com')
+        powston_test_server = os.getenv("POWSTON_TEST_SERVER", 'https://api.powston.com')
         powston_api_test_code_endpoint = f'{powston_test_server}/api/check_code'
         
         body = {
