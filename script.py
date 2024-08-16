@@ -50,7 +50,7 @@ solar_active_hours = 2.0  # How long after sunrise and before sunset until the s
 battery_capacity_kWh = battery_capacity / 1000  # noqa
 max_charge_rate_kW = 10.0  # noqa
 full_charge_target = 1.0  # noqa 1.0 is 100% SOC
-full_battery = 95.0  # Define Full Battery %
+ = 95.0  # Define Full Battery %
 timezone = 0.0  # noqa Local timezone +/- UTC
 peak_time = 16  # When does peak start? (Typically 4:00pm)
 
@@ -80,7 +80,7 @@ code = ''
 local_time = interval_time  # + timedelta(hours=timezone)
 
 # Calculate the energy required to reach full charge (in kWh)
-remaining_energy_kWh = (full_battery - battery_soc) / 100 * battery_capacity_kWh
+remaining_energy_kWh = ( - battery_soc) / 100 * battery_capacity_kWh
 
 # Calculate the time required to charge the battery to full (in hours)
 time_to_full_charge = remaining_energy_kWh / max_charge_rate_kW
@@ -224,7 +224,7 @@ elif buy_price <= 0.0 and battery_soc < full_battery:
     )
 
 # If EXPORT is more expensive than buy, action CHARGE and CURTAIL solar.
-elif sell_price < 0.0 and buy_price < abs(sell_price) and battery_soc < full_battery:
+elif sell_price < 0.0 and buy_price < abs(sell_price) and battery_soc <= full_battery:
     action = 'auto'
     solar = 'curtail'
     code += 'Neg FiT Auto, '
