@@ -50,7 +50,7 @@ solar_active_hours = 2.0  # How long after sunrise and before sunset until the s
 battery_capacity_kWh = battery_capacity / 1000  # noqa
 max_charge_rate_kW = 10.0  # noqa
 full_charge_target = 1.0  # noqa 1.0 is 100% SOC
- = 95.0  # Define Full Battery %
+full_battery = 95.0  # Define Full Battery %
 timezone = 0.0  # noqa Local timezone +/- UTC
 peak_time = 16  # When does peak start? (Typically 4:00pm)
 
