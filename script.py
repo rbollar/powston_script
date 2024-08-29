@@ -91,15 +91,6 @@ start_charging_time = peak_time - time_to_full_charge
 # Margin between min / max buy & sell prices
 price_margin = min_sell_price - max_buy_price # noqa
 
-# Determine today's date
-today = local_time.date()
-
-# Calculate the sunrise and sunset times using astral (assumed to be in UTC and converted to local)
-# location.observer comes from isolarcloud and is provided by Powston
-s = sun(location.observer, date=today)
-sunrise = s['sunrise']  # + timedelta(hours=timezone)
-sunset = s['sunset']  # + timedelta(hours=timezone)
-
 # Adjusted sunrise and sunset times with solar active hours
 sunrise_plus_active = sunrise + timedelta(hours=solar_active_hours)
 sunset_minus_active = sunset - timedelta(hours=solar_active_hours)
