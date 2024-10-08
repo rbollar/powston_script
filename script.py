@@ -4,7 +4,7 @@
 # User-entered data
 
 # Pricing Decisions
-max_buy_price = 20.0  # Maximum energy purchase (Import) price in cents / kWh
+max_buy_price = 10.0  # Maximum energy purchase (Import) price in cents / kWh
 min_sell_price = 25.0  # Minimum energy sell (Export) price in cents / kWh
 min_day_sell_price = 15.0  # Daytime minimum energy sell (Export) price in cents / kWh
 always_sell_price = 100.0  # The price to sell (Export) regardless of remaining storage in cents / kWh
@@ -54,6 +54,7 @@ full_charge_target = 1.0  # noqa 1.0 is 100% SOC
 full_battery = 95.0  # Define Full Battery %
 timezone = 0.0  # noqa Local timezone +/- UTC
 peak_time = 16  # When does peak start? (Typically 4:00pm)
+peak_time_end = 20 # When does peak end (Typically 9:00pm) Select 20 for 8:59:59
 
 # End user-entered data
 
@@ -325,7 +326,7 @@ else:
             if buy_sell_opportunity_exists:
                 break
 
-        if buy_sell_opportunity_exists:
+        if buy_sell_opportunity_exists and not (peak_time <= current_hour < peak_time_end):
             action = 'import'
             solar = 'export'
             code += 'Buy Low, Sell High, '
