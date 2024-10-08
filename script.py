@@ -21,6 +21,7 @@ future_forecast_hours = 8.0  # Future forecast hours to consider. Forecasts beyo
 desired_daytime_battery_soc = 50.0  # noqa Desired daytime battery SOC
 
 # Facility, Inverter and Battery specifications
+facility_name = "65 Qld"
 num_inverters = 2  # Number of inverters at this facility
 solar_active_hours = 2.0  # How long after sunrise and before sunset until the solar array is active (in hours)
 battery_capacity_kWh = battery_capacity / 1000  # noqa
@@ -32,7 +33,7 @@ peak_time = 16  # When does peak start? (Typically 4:00pm)
 
 # End user-entered data
 
-def update_reason(buy_price, sell_price, lowest_buy_price, highest_sell_price,
+def update_reason(facility_name, buy_price, sell_price, lowest_buy_price, highest_sell_price,
                   hours_until_lowest_buy, hours_until_highest_sell, house_load,
                   sunrise_plus_active, sunset_minus_active, base_reason, required_min_soc,
                   code, hours_until_sunrise_plus_active, hours_until_sunset_minus_active, local_time, **kwargs):
@@ -41,7 +42,7 @@ def update_reason(buy_price, sell_price, lowest_buy_price, highest_sell_price,
     - str: The updated reason message, trimmed to 256 characters if necessary.
     """
     additional_info = ", ".join([f"{key}={value}" for key, value in kwargs.items()])
-    reason = (f"Bollar: {base_reason}. Buy: {buy_price:.1f}c, Sell: {sell_price:.1f}c, Low Buy: {lowest_buy_price:.1f}c ({hours_until_lowest_buy}h), "
+    reason = (f{facility_name}: {base_reason}. Buy: {buy_price:.1f}c, Sell: {sell_price:.1f}c, Low Buy: {lowest_buy_price:.1f}c ({hours_until_lowest_buy}h), "
               f"High Sell: {highest_sell_price:.1f}c ({hours_until_highest_sell}h), Load: {house_load:,.0f}W, Req Min SOC: {required_min_soc:.1f}, "
               f"Code: {code} Hr to SRise: {hours_until_sunrise_plus_active:.1f}h, Hr to SSet: {hours_until_sunset_minus_active:.1f}h. {local_time} "
               f"{additional_info}")
@@ -142,7 +143,7 @@ if daytime:
     solar = 'export'
     code += 'Day, '
     reason = update_reason(
-        buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+        facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
         discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
         effective_house_power, sunrise_plus_active, sunset_minus_active, 'Daytime Default: No other rule applies',
         required_min_soc, code, hours_until_sunrise_plus_active, hours_until_sunset_minus_active, local_time
@@ -153,19 +154,19 @@ else:
     solar = 'export'
     code += 'Night, '
     reason = update_reason(
-        buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+        facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
         discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
         effective_house_power, sunrise_plus_active, sunset_minus_active, 'Night Default: No other rule applies',
         required_min_soc, code, hours_until_sunrise_plus_active, hours_until_sunset_minus_active, local_time,
     )
 
 # Ensure the battery is fully charged for the evening peak event (Code = D)
-if start_charging_time <= local_time.hour < peak_time and battery_soc < full_battery:
+if start_charging_time <= local_time < peak_time and battery_soc < full_battery:
     action = 'import'
     solar = 'export'
     code += 'Chg for Peak, '
     reason = update_reason(
-        buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+        facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
         discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
         effective_house_power, sunrise_plus_active, sunset_minus_active,
         'IMPORT to reach full battery by 4 PM',
@@ -178,7 +179,7 @@ elif sell_price >= always_sell_price:
     solar = 'export'
     code += 'Always Sell, '
     reason = update_reason(
-        buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+        facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
         discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
         effective_house_power, sunrise_plus_active, sunset_minus_active,
         'Sell price exceeds the always sell price',
@@ -191,7 +192,7 @@ elif buy_price <= 0.0 and battery_soc < full_battery:
     solar = 'curtail'
     code += 'Neg FiT Import, '
     reason = update_reason(
-        buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+        facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
         discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
         effective_house_power, sunrise_plus_active, sunset_minus_active,
         'Negative FiT: If buy price is <= 0, IMPORT electricity and CURTAIL solar', required_min_soc, code, hours_until_sunrise_plus_active,
@@ -204,7 +205,7 @@ elif sell_price < 0.0 and buy_price < abs(sell_price) and battery_soc < full_bat
     solar = 'curtail'
     code += 'Neg FiT Auto, '
     reason = update_reason(
-        buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+        facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
         discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
         effective_house_power, sunrise_plus_active, sunset_minus_active,
         'Negative FiT: If EXPORT is more expensive than buy, action CHARGE and CURTAIL solar', required_min_soc, code,
@@ -217,7 +218,7 @@ elif sell_price < 0.0 and battery_soc > full_battery:
     solar = 'curtail'
     code += 'Neg FiT Neg Sell, '
     reason = update_reason(
-        buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+        facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
         discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
         effective_house_power, sunrise_plus_active, sunset_minus_active,
         'Negative FiT: If sell price < 0, action CHARGE and CURTAIL solar', required_min_soc, code, hours_until_sunrise_plus_active,
@@ -231,7 +232,7 @@ elif daytime:
         solar = 'export'
         code += 'Daytime and hi SoC, '
         reason = update_reason(
-            buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+            facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
             discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
             effective_house_power, sunrise_plus_active, sunset_minus_active,
             'PV > 0 and high SoC: EXPORT excess',
@@ -242,7 +243,7 @@ elif daytime:
         solar = 'export'
         code += 'PV > 0 and lo SoC, '
         reason = update_reason(
-            buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+            facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
             discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
             effective_house_power, sunrise_plus_active, sunset_minus_active,
             'PV > 0 and low SoC or low Sell Price',
@@ -257,7 +258,7 @@ else:
         solar = 'export'
         code += 'Sell Now, '
         reason = update_reason(
-            buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+            facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
             discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
             effective_house_power, sunrise_plus_active, sunset_minus_active,
             'Fcst: Max sell price now; EXPORT if SOC > required', required_min_soc, code, hours_until_sunrise_plus_active,
@@ -268,7 +269,7 @@ else:
     elif sell_price >= max(discounted_sell_forecast) and sell_price >= min_sell_price:
         code += 'Could Sell; lo SoC, '
         reason = update_reason(
-            buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+            facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
             discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
             effective_house_power, sunrise_plus_active, sunset_minus_active,
             'Fcst: Max sell price now; SoC < required', required_min_soc, code, hours_until_sunrise_plus_active,
@@ -281,7 +282,7 @@ else:
         solar = 'export'
         code += 'Buy Now, min SoC, '
         reason = update_reason(
-            buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+            facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
             discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
             effective_house_power, sunrise_plus_active, sunset_minus_active,
             'Fcst: Low buy price now; IMPORT if SOC < required', required_min_soc, code, hours_until_sunrise_plus_active,
@@ -304,7 +305,7 @@ else:
             solar = 'export'
             code += 'Buy Low, Sell High, '
             reason = update_reason(
-                buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+                facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
                 discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
                 effective_house_power, sunrise_plus_active, sunset_minus_active,
                 'Fcst: Buy low, sell high opportunity exists', required_min_soc, code, hours_until_sunrise_plus_active,
@@ -316,7 +317,7 @@ else:
             solar = 'export'
             code += 'Default Action, '
             reason = update_reason(
-                buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+                facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
                 discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
                 effective_house_power, sunrise_plus_active, sunset_minus_active,
                 'Default action as no specific condition met', required_min_soc, code, hours_until_sunrise_plus_active,
