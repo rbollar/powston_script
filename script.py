@@ -82,7 +82,7 @@ code = ''
 local_time = interval_time  # + timedelta(hours=timezone)
 
 # Calculate the energy required to reach full charge (in kWh)
-remaining_energy_kWh = ( - battery_soc) / 100 * battery_capacity_kWh
+remaining_energy_kWh = (full_battery - battery_soc) / 100 * battery_capacity_kWh
 
 # Calculate the time required to charge the battery to full (in hours)
 time_to_full_charge = remaining_energy_kWh / max_charge_rate_kW
@@ -92,15 +92,6 @@ start_charging_time = peak_time - time_to_full_charge
 
 # Margin between min / max buy & sell prices
 price_margin = min_sell_price - max_buy_price # noqa
-
-# Determine today's date
-today = local_time.date()
-
-# Calculate the sunrise and sunset times using astral (assumed to be in UTC and converted to local)
-# location.observer comes from isolarcloud and is provided by Powston
-s = sun(location.observer, date=today)
-sunrise = s['sunrise']  # + timedelta(hours=timezone)
-sunset = s['sunset']  # + timedelta(hours=timezone)
 
 # Adjusted sunrise and sunset times with solar active hours
 sunrise_plus_active = sunrise + timedelta(hours=solar_active_hours)
