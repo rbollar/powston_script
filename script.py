@@ -51,10 +51,10 @@ solar_active_hours = 2.0  # How long after sunrise and before sunset until the s
 battery_capacity_kWh = battery_capacity / 1000  # noqa
 max_charge_rate_kW = 10.0  # noqa
 full_charge_target = 1.0  # noqa 1.0 is 100% SOC
-full_battery = 95.0  # Define Full Battery %
+full_battery = 99.0  # Define Full Battery %
 timezone = 0.0  # noqa Local timezone +/- UTC
 peak_time = 16  # When does peak start? (Typically 4:00pm)
-peak_time_end = 20 # When does peak end (Typically 9:00pm) Select 20 for 8:59:59
+peak_time_end = 20  # When does peak end (Typically 9:00pm) Select 20 for 8:59:59
 
 # End user-entered data
 
@@ -67,7 +67,7 @@ def update_reason(facility_name, buy_price, sell_price, lowest_buy_price, highes
     - str: The updated reason message, trimmed to 256 characters if necessary.
     """
     additional_info = ", ".join([f"{key}={value}" for key, value in kwargs.items()])
-    reason = (f{facility_name}: {base_reason}. Buy: {buy_price:.1f}c, Sell: {sell_price:.1f}c, Low Buy: {lowest_buy_price:.1f}c ({hours_until_lowest_buy}h), "
+    reason = (f"{facility_name}: {base_reason}. Buy: {buy_price:.1f}c, Sell: {sell_price:.1f}c, Low Buy: {lowest_buy_price:.1f}c ({hours_until_lowest_buy}h), "  # noqa
               f"High Sell: {highest_sell_price:.1f}c ({hours_until_highest_sell}h), Load: {house_load:,.0f}W, Req Min SOC: {required_min_soc:.1f}, "
               f"Code: {code} Hr to SRise: {hours_until_sunrise_plus_active:.1f}h, Hr to SSet: {hours_until_sunset_minus_active:.1f}h. {local_time} "
               f"{additional_info}")
@@ -81,8 +81,10 @@ code = ''
 # Determine Local Time
 local_time = interval_time  # + timedelta(hours=timezone)
 
+current_hour = local_time.hour
+
 # Calculate the energy required to reach full charge (in kWh)
-remaining_energy_kWh = ( - battery_soc) / 100 * battery_capacity_kWh
+remaining_energy_kWh = (- battery_soc) / 100 * battery_capacity_kWh
 
 # Calculate the time required to charge the battery to full (in hours)
 time_to_full_charge = remaining_energy_kWh / max_charge_rate_kW
@@ -187,7 +189,7 @@ else:
     )
 
 # Ensure the battery is fully charged for the evening peak event (Code = D)
-if start_charging_time <= local_time < peak_time and battery_soc < full_battery:
+if start_charging_time <= current_hour < peak_time and battery_soc < full_battery:
     action = 'import'
     solar = 'export'
     code += 'Chg for Peak, '
@@ -226,7 +228,7 @@ elif buy_price <= 0.0 and battery_soc < full_battery:
     )
 
 # If EXPORT is more expensive than buy, action CHARGE and CURTAIL solar.
-elif sell_price < 0.0 and buy_price < abs(sell_price) and battery_soc <= full_battery:
+elif sell_price < 0.0 and buy_price < abs(sell_price) and battery_soc > full_battery:
     action = 'auto'
     solar = 'curtail'
     code += 'Neg FiT Auto, '
