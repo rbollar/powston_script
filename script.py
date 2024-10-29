@@ -7,7 +7,7 @@
 max_buy_price = 10.0  # Maximum energy purchase (Import) price in cents / kWh
 min_sell_price = 25.0  # Minimum energy sell (Export) price in cents / kWh
 min_day_sell_price = 15.0  # Daytime minimum energy sell (Export) price in cents / kWh
-always_sell_price = 100.0  # The price to sell (Export) regardless of remaining storage in cents / kWh
+always_sell_price = 75.0  # The price to sell (Export) regardless of remaining storage in cents / kWh
 
 # Forecast Adjustments
 # Minimum house power usage to accept in the forecast (in Wh) in the event reported house_power is missing
@@ -38,7 +38,7 @@ min_house_power = [
     1500.0   # 11:00 PM - 12:00 AM
 ]
 # Compounding discount to buy and sell forecast. For each additional future period, buy price increases by x% / sell decreases by x%.
-uncertainty_discount = 0.05  # 0.05 is 5% per hour. Larger values are more conservative.
+uncertainty_discount = 0.10  # 0.05 is 5% per hour. Larger values are more conservative.
 
 future_forecast_hours = 8.0  # Future forecast hours to consider. Forecasts beyond the battery's capacity are less useful.
 
@@ -281,7 +281,12 @@ elif daytime:
 # Evaluate forecast-based buy/sell decisions based on Powston 8-hour buy/sell forecasts (Code = E)
 else:
     # Check if the maximum forecasted sell price is in the current period and discharge only if battery SOC is above required_min_soc
-    if battery_soc > required_min_soc and sell_price >= max(discounted_sell_forecast) and sell_price >= min_sell_price:
+    if (
+        buy_price < max_buy_price and
+        battery_soc > required_min_soc and
+        sell_price >= max(discounted_sell_forecast) and
+        sell_price >= min_sell_price
+    ):
         action = 'export'
         solar = 'export'
         code += 'Sell Now, '
