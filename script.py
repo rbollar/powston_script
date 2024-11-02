@@ -84,7 +84,7 @@ local_time = interval_time  # + timedelta(hours=timezone)
 current_hour = local_time.hour
 
 # Calculate the energy required to reach full charge (in kWh)
-remaining_energy_kWh = (- battery_soc) / 100 * battery_capacity_kWh
+remaining_energy_kWh = battery_soc / 100 * battery_capacity_kWh
 
 # Calculate the time required to charge the battery to full (in hours)
 time_to_full_charge = remaining_energy_kWh / max_charge_rate_kW
