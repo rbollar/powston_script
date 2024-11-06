@@ -345,6 +345,18 @@ else:
                 hours_until_sunset_minus_active, local_time
             )
         else:
+            # Buy if price low and battery soc low.
+            if battery_soc < 10 and local_time < sunrise and buy_price < 15:
+                action = 'import'
+                solar = 'export'
+                code += 'Buy Low Battery, '
+                reason = update_reason(
+                    facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
+                    discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
+                    effective_house_power, sunrise_plus_active, sunset_minus_active,
+                    'Fcst: Buy Low Battery', required_min_soc, code, hours_until_sunrise_plus_active,
+                    hours_until_sunset_minus_active, local_time
+                )
             # Default action if no specific condition is met
             action = 'auto'
             solar = 'export'
