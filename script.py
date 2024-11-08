@@ -202,7 +202,7 @@ if start_charging_time <= current_hour < peak_time and battery_soc < full_batter
     )
 
 # Always sell if sell price is greater than always sell price.
-elif sell_price >= always_sell_price:
+elif sell_price >= always_sell_price and battery_soc > 10:
     action = 'export'
     solar = 'export'
     code += 'Always Sell, '
