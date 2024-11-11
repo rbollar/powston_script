@@ -1,2 +1,5 @@
 requests
 nose2
+# Powston helper libraries
+aemo_to_tariff @ git+https://github.com/powston/aemo_to_tariff@v0.2.5
+inverter_simulator @ git+https://github.com/powston/inverter_simulator@v0.1.2
