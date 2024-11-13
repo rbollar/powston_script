@@ -8,7 +8,7 @@ max_buy_price = 10.0  # Maximum energy purchase (Import) price in cents / kWh
 min_sell_price = 25.0  # Minimum energy sell (Export) price in cents / kWh
 min_day_sell_price = 15.0  # Daytime minimum energy sell (Export) price in cents / kWh
 always_sell_price = 75.0  # The price to sell (Export) regardless of remaining storage in cents / kWh
-min_sell_soc = 10 =  # The minimum battery State of Charge to make a sell decision 10 = 10%
+min_sell_soc = 10  # The minimum battery State of Charge to make a sell decision 10 = 10%
 
 # Forecast Adjustments
 # Minimum house power usage to accept in the forecast (in Wh) in the event reported house_power is missing
@@ -179,7 +179,7 @@ if daytime:
     )
 
 else:
-    action = 'discharge'
+    action = 'auto'
     solar = 'export'
     code += 'Night, '
     reason = update_reason(
@@ -358,14 +358,4 @@ else:
                     'Fcst: Buy Low Battery', required_min_soc, code, hours_until_sunrise_plus_active,
                     hours_until_sunset_minus_active, local_time
                 )
-            # Default action if no specific condition is met
-            action = 'auto'
-            solar = 'export'
-            code += 'Default Action, '
-            reason = update_reason(
-                facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
-                discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
-                effective_house_power, sunrise_plus_active, sunset_minus_active,
-                'Default action as no specific condition met', required_min_soc, code, hours_until_sunrise_plus_active,
-                hours_until_sunset_minus_active, local_time
-            )
+
