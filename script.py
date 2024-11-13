@@ -8,6 +8,7 @@ max_buy_price = 10.0  # Maximum energy purchase (Import) price in cents / kWh
 min_sell_price = 25.0  # Minimum energy sell (Export) price in cents / kWh
 min_day_sell_price = 15.0  # Daytime minimum energy sell (Export) price in cents / kWh
 always_sell_price = 75.0  # The price to sell (Export) regardless of remaining storage in cents / kWh
+min_sell_soc = 10 =  # The minimum battery State of Charge to make a sell decision 10 = 10%
 
 # Forecast Adjustments
 # Minimum house power usage to accept in the forecast (in Wh) in the event reported house_power is missing
@@ -202,7 +203,7 @@ if start_charging_time <= current_hour < peak_time and battery_soc < full_batter
     )
 
 # Always sell if sell price is greater than always sell price.
-elif sell_price >= always_sell_price and battery_soc > 10:
+elif sell_price >= always_sell_price and battery_soc > min_sell_soc:
     action = 'export'
     solar = 'export'
     code += 'Always Sell, '
