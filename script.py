@@ -373,3 +373,5 @@ else:
 if 12 < interval_time.hour < 16 and battery_soc < 60 and action != 'import':
     action = 'import'
     reason += ' SOC < 50'
+
+reason += f' even know {sunrise.hour}'
