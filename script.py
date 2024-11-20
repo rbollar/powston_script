@@ -5,6 +5,7 @@
 
 # Pricing Decisions
 max_buy_price = 10.0  # Maximum energy purchase (Import) price in cents / kWh
+max_am_buy_price = 20.0  # In very low battery state, max price to pay to charge battery to be past AM peak in cents / kWh
 min_sell_price = 25.0  # Minimum energy sell (Export) price in cents / kWh
 min_day_sell_price = 15.0  # Daytime minimum energy sell (Export) price in cents / kWh
 always_sell_price = 75.0  # The price to sell (Export) regardless of remaining storage in cents / kWh
@@ -85,7 +86,7 @@ local_time = interval_time  # + timedelta(hours=timezone)
 current_hour = local_time.hour
 
 # Calculate the energy required to reach full charge (in kWh)
-remaining_energy_kWh = battery_soc / 100 * battery_capacity_kWh
+remaining_energy_kWh = (100 - battery_soc) / 100 * battery_capacity_kWh
 
 # Calculate the time required to charge the battery to full (in hours)
 time_to_full_charge = remaining_energy_kWh / max_charge_rate_kW
@@ -164,9 +165,14 @@ for i in range(int(future_forecast_hours)):
 # Calculate the index of the cutoff period for future forecasts based on sunrise and solar active hours
 cutoff_index = min(len(discounted_buy_forecast), int(solar_active_hours)) # noqa
 
+#
 # Begin decision evaluations
+#
 
-# Default Behavior (Code = C)
+#
+# Set default behavior for day & night if no other conditions applies (Code = C)
+#
+
 if daytime:
     action = 'auto'
     solar = 'export'
@@ -311,7 +317,7 @@ else:
         )
 
     # If the buy price for the current period is the lowest in the forecast and the battery SOC is less than the min SOC, charge only at night
-    elif not daytime and buy_price == min(discounted_buy_forecast) and battery_soc < required_min_soc:
+    elif not daytime and buy_price == min(discounted_buy_forecast) and battery_soc < required_min_soc and not (peak_time <= current_hour < peak_time_end):
         action = 'import'
         solar = 'export'
         code += 'Buy Now, min SoC, '
@@ -347,7 +353,7 @@ else:
             )
         else:
             # Buy if price low and battery soc low.
-            if battery_soc < 10 and local_time < sunrise and buy_price < 15:
+            if battery_soc < min_sell_soc and local_time < sunrise and buy_price < max_am_buy_price:
                 action = 'import'
                 solar = 'export'
                 code += 'Buy Low Battery, '
