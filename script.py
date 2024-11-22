@@ -196,7 +196,7 @@ else:
     )
 
 # Ensure the battery is fully charged for the evening peak event (Code = D)
-if current_hour <= start_charging_time < peak_time and battery_soc < full_battery:
+if current_hour <= start_charging_time and start_charging_time < peak_time and battery_soc < full_battery:
     action = 'import'
     solar = 'export'
     code += 'Chg for Peak, '
