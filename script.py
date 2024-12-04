@@ -5,9 +5,11 @@
 
 # Pricing Decisions
 max_buy_price = 10.0  # Maximum energy purchase (Import) price in cents / kWh
+max_am_buy_price = 20.0  # In very low battery state, max price to pay to charge battery to be past AM peak in cents / kWh
 min_sell_price = 25.0  # Minimum energy sell (Export) price in cents / kWh
 min_day_sell_price = 15.0  # Daytime minimum energy sell (Export) price in cents / kWh
 always_sell_price = 75.0  # The price to sell (Export) regardless of remaining storage in cents / kWh
+min_sell_soc = 10  # The minimum battery State of Charge to make a sell decision 10 = 10%
 
 # Forecast Adjustments
 # Minimum house power usage to accept in the forecast (in Wh) in the event reported house_power is missing
@@ -51,7 +53,7 @@ solar_active_hours = 2.0  # How long after sunrise and before sunset until the s
 battery_capacity_kWh = battery_capacity / 1000  # noqa
 max_charge_rate_kW = 10.0  # noqa
 full_charge_target = 1.0  # noqa 1.0 is 100% SOC
-full_battery = 98.0  # Define Full Battery %
+full_battery = 99.0  # Define Full Battery %
 timezone = 0.0  # noqa Local timezone +/- UTC
 peak_time = 16  # When does peak start? (Typically 4:00pm)
 peak_time_end = 20  # When does peak end (Typically 9:00pm) Select 20 for 8:59:59
@@ -84,13 +86,13 @@ local_time = interval_time  # + timedelta(hours=timezone)
 current_hour = local_time.hour
 
 # Calculate the energy required to reach full charge (in kWh)
-remaining_energy_kWh = battery_soc / 100 * battery_capacity_kWh
+remaining_energy_kWh = (100 - battery_soc) / 100 * battery_capacity_kWh
 
 # Calculate the time required to charge the battery to full (in hours)
 time_to_full_charge = remaining_energy_kWh / max_charge_rate_kW
 
 # Determine the time to start charging to be full by peak time
-start_charging_time = peak_time - time_to_full_charge
+start_charging_time = int(peak_time - time_to_full_charge) - 1
 
 # Margin between min / max buy & sell prices
 price_margin = min_sell_price - max_buy_price # noqa
@@ -163,9 +165,14 @@ for i in range(int(future_forecast_hours)):
 # Calculate the index of the cutoff period for future forecasts based on sunrise and solar active hours
 cutoff_index = min(len(discounted_buy_forecast), int(solar_active_hours)) # noqa
 
+#
 # Begin decision evaluations
+#
 
-# Default Behavior (Code = C)
+#
+# Set default behavior for day & night if no other conditions applies (Code = C)
+#
+
 if daytime:
     action = 'auto'
     solar = 'export'
@@ -178,7 +185,7 @@ if daytime:
     )
 
 else:
-    action = 'discharge'
+    action = 'auto'
     solar = 'export'
     code += 'Night, '
     reason = update_reason(
@@ -202,7 +209,7 @@ if start_charging_time <= current_hour < peak_time and battery_soc < full_batter
     )
 
 # Always sell if sell price is greater than always sell price.
-elif sell_price >= always_sell_price and battery_soc > 10:
+elif sell_price >= always_sell_price and battery_soc > min_sell_soc:
     action = 'export'
     solar = 'export'
     code += 'Always Sell, '
@@ -310,7 +317,7 @@ else:
         )
 
     # If the buy price for the current period is the lowest in the forecast and the battery SOC is less than the min SOC, charge only at night
-    elif not daytime and buy_price == min(discounted_buy_forecast) and battery_soc < required_min_soc:
+    elif not daytime and buy_price == min(discounted_buy_forecast) and battery_soc < required_min_soc and not (peak_time <= current_hour < peak_time_end):
         action = 'import'
         solar = 'export'
         code += 'Buy Now, min SoC, '
@@ -346,7 +353,7 @@ else:
             )
         else:
             # Buy if price low and battery soc low.
-            if battery_soc < 10 and local_time < sunrise and buy_price < 15:
+            if battery_soc < min_sell_soc and local_time < sunrise and buy_price < max_am_buy_price:
                 action = 'import'
                 solar = 'export'
                 code += 'Buy Low Battery, '
@@ -357,21 +364,9 @@ else:
                     'Fcst: Buy Low Battery', required_min_soc, code, hours_until_sunrise_plus_active,
                     hours_until_sunset_minus_active, local_time
                 )
-            # Default action if no specific condition is met
-            action = 'auto'
-            solar = 'export'
-            code += 'Default Action, '
-            reason = update_reason(
-                facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
-                discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
-                effective_house_power, sunrise_plus_active, sunset_minus_active,
-                'Default action as no specific condition met', required_min_soc, code, hours_until_sunrise_plus_active,
-                hours_until_sunset_minus_active, local_time
-            )
 
-
-if 12 < interval_time.hour < 16 and battery_soc < 60 and action != 'import':
+if 14 < interval_time.hour < 16 and battery_soc < 60 and action != 'import' and buy_price < 30:
     action = 'import'
-    reason += ' SOC < 50'
+    reason += ' panic buy SOC < 50'
 
 reason += f' even know {sunrise.hour}'
