@@ -124,7 +124,7 @@ else:
     hours_until_sunset_minus_active = (next_sunset_minus_active - local_time).total_seconds() / 3600.0
 
 # Hack: Determine if it's daytime based PV generation and time before peak.
-daytime = solar_power > 0 and (local_time.hour < peak_time)
+daytime = (solar_power > 0) and (local_time.hour < peak_time)
 
 # Adjust the reserve factor to decrease until solar_active_hours after sunrise (Code=B)
 if 0 <= hours_until_sunrise_plus_active <= solar_active_hours:
@@ -348,7 +348,7 @@ else:
                 facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
                 discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
                 effective_house_power, sunrise_plus_active, sunset_minus_active,
-                'Fcst: Buy low, sell high opportunity exists', required_min_soc, code, hours_until_sunrise_plus_active,
+                f'Fcst: {sell_price} Buy low, sell high opportunity exists', required_min_soc, code, hours_until_sunrise_plus_active,
                 hours_until_sunset_minus_active, local_time
             )
         else:
@@ -365,3 +365,8 @@ else:
                     hours_until_sunset_minus_active, local_time
                 )
 
+if 14 < interval_time.hour < 16 and battery_soc < 60 and action != 'import' and buy_price < 30:
+    action = 'import'
+    reason += ' panic buy SOC < 50'
+
+reason += f' even know {sunrise.hour}'
