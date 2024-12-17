@@ -134,11 +134,15 @@ else:
     reserve_factor = 1
     code += f'Reserve: {reserve_factor:.2f}, '
 
-# Identify the index of the lowest buy price in the forecast (How many hours in the future)
-index_lowest_buy = buy_forecast.index(min(buy_forecast))
+# Check if buy_forecast is empty
+if not buy_forecast:
+    hours_until_lowest_buy = 99
+else:
+    # Identify the index of the lowest buy price in the forecast (How many hours in the future)
+    index_lowest_buy = buy_forecast.index(min(buy_forecast))
 
-# Calculate the time until the lowest buy price
-hours_until_lowest_buy = index_lowest_buy
+    # Calculate the time until the lowest buy price
+    hours_until_lowest_buy = index_lowest_buy
 
 # Ensure house power is at least min_house_power for the current hour divided by the number of inverters
 current_hour = local_time.hour
