@@ -3,6 +3,59 @@ import os
 import json
 import requests
 
+class InverterDict(dict):
+    """
+    A dictionary-like container that can retrieve items by index, ID, or serial.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.add_inverter(kwargs)
+
+    def add_inverter(self, params):
+        """
+        Adds an inverter to the dictionary with keys:
+            inv_id (str or int): Unique ID of the inverter
+            serial_number (str): Serial number of the inverter
+        params (dict): Arbitrary parameters associated with this inverter
+        """
+        # Store the entry under the inv_id key
+        inv_id = params.get('id', None)
+        serial_number = params.get('serial_number', None)
+        if inv_id is None or serial_number is None:
+            return
+        self[str(inv_id)] = params
+        self[str(serial_number)] = params
+        self[f'inverter_params_{inv_id}'] = params
+
+    def __getitem__(self, key):
+        """
+        Flexible item retrieval:
+          - If key is an integer, interpret as index in insertion order.
+          - If key is a known ID, return that entry.
+          - If key is a known serial_number, convert it to its corresponding ID, then return the entry.
+        Raises KeyError or IndexError if not found.
+        """
+        if isinstance(key, int):
+            # Index-based access
+            real_id = self.keys()[key]
+            return super().__getitem__(real_id)
+        else:
+            # Non-integer: either ID or serial_number
+            if key in self:
+                # Key is an ID
+                return super().__getitem__(key)
+            return {}
+
+    def get(self, key, default=None):
+        """
+        Same flexible logic as __getitem__, but returns `default` if not found.
+        """
+        try:
+            return self.__getitem__(key)
+        except (KeyError, IndexError):
+            return default
+
 class TestUserScript(unittest.TestCase):
     
     def __init__(self, *args, **kwargs):
@@ -38,6 +91,7 @@ class TestUserScript(unittest.TestCase):
             'latitude': -27.4698,
             'longitude': 153.0251,
             "inverter_action_id": 1,
+            "inverters": InverterDict({'battery_power': 0, 'house_power': 0, 'solar_power': 0})
         }
         
         sim_code_response = requests.post(powston_api_sim_code_endpoint, json=body, headers=self.header).json()
