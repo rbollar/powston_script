@@ -134,11 +134,15 @@ else:
     reserve_factor = 1
     code += f'Reserve: {reserve_factor:.2f}, '
 
-# Identify the index of the lowest buy price in the forecast (How many hours in the future)
-index_lowest_buy = buy_forecast.index(min(buy_forecast))
+# Check if buy_forecast is empty
+if not buy_forecast:
+    hours_until_lowest_buy = 99
+else:
+    # Identify the index of the lowest buy price in the forecast (How many hours in the future)
+    index_lowest_buy = buy_forecast.index(min(buy_forecast))
 
-# Calculate the time until the lowest buy price
-hours_until_lowest_buy = index_lowest_buy
+    # Calculate the time until the lowest buy price
+    hours_until_lowest_buy = index_lowest_buy
 
 # Ensure house power is at least min_house_power for the current hour divided by the number of inverters
 current_hour = local_time.hour
@@ -150,18 +154,30 @@ estimated_consumption_kW = effective_house_power * hours_until_lowest_buy
 # Calculate the required minimum SOC to ensure the battery lasts until the lowest buy price period
 required_min_soc = reserve_factor * (estimated_consumption_kW / battery_capacity) * 100  # Convert to percentage
 
-# Apply the discount to forecasted buy prices up to future_forecast_hours
+# Initialize the forecasts with default values
 discounted_buy_forecast = []
-for i in range(int(future_forecast_hours)):
-    if i < len(buy_forecast):
-        discounted_buy_forecast.append(buy_forecast[i] * ((1 + uncertainty_discount) ** i))
-
-# Apply the discount to forecasted sell prices up to future_forecast_hours
 discounted_sell_forecast = []
-for i in range(int(future_forecast_hours)):
-    if i < len(sell_forecast):
-        discounted_sell_forecast.append(sell_forecast[i] * ((1 - uncertainty_discount) ** i))
 
+try:
+    # Check if buy_forecast and sell_forecast are valid
+    if not buy_forecast or not isinstance(buy_forecast, list) or any(v <= 0 for v in buy_forecast):
+        raise ValueError("Invalid buy_forecast")
+    if not sell_forecast or not isinstance(sell_forecast, list) or any(v <= 0 for v in sell_forecast):
+        raise ValueError("Invalid sell_forecast")
+
+    # Apply the discount to forecasted buy prices up to future_forecast_hours
+    for i in range(int(future_forecast_hours)):
+        if i < len(buy_forecast):
+            discounted_buy_forecast.append(buy_forecast[i] * ((1 + uncertainty_discount) ** i))
+
+    # Apply the discount to forecasted sell prices up to future_forecast_hours
+    for i in range(int(future_forecast_hours)):
+        if i < len(sell_forecast):
+            discounted_sell_forecast.append(sell_forecast[i] * ((1 - uncertainty_discount) ** i))
+except ValueError as e:  # noqa
+    # If an error occurs, assign default values
+    discounted_buy_forecast = [100000] * int(future_forecast_hours)
+    discounted_sell_forecast = [1] * int(future_forecast_hours)
 # Calculate the index of the cutoff period for future forecasts based on sunrise and solar active hours
 cutoff_index = min(len(discounted_buy_forecast), int(solar_active_hours)) # noqa
 
