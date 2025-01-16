@@ -380,5 +380,5 @@ reason += f' even know {sunrise.hour}'
 
 # Declare no exports when negative
 if rrp < 0:
-    feed_in_limitation = 0
-    reason += f' setting feed in to {feed_in_limitation}'
+    feed_in_power_limitation = 0
+    reason += f' setting feed in to {feed_in_power_limitation}'
