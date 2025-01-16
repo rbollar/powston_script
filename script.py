@@ -377,3 +377,8 @@ if 14 < interval_time.hour < 16 and battery_soc < 60 and action != 'import' and 
     reason += ' panic buy SOC < 50'
 
 reason += f' even know {sunrise.hour}'
+
+# Declare no exports when negative
+if rrp < 0:
+    feed_in_limitation = 0
+    reason += f' setting feed in to {feed_in_limitation}'
