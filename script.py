@@ -204,18 +204,19 @@ else:
     )
 
 # Ensure the battery is fully charged for the evening peak event (Code = D)
-if (start_charging_time <= current_hour < peak_time and battery_soc < full_battery) or sell_price <= max_day_opportunistic_buy_price:
+if battery_soc < full_battery and (
+    start_charging_time <= current_hour < peak_time or sell_price <= max_day_opportunistic_buy_price
+):
     action = 'import'
     solar = 'export'
-    code += 'Chg for Peak, '
+    code += 'Chg for Peak or Opportunistic Buy, '
     reason = update_reason(
         facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
         discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
         effective_house_power, sunrise_plus_active, sunset_minus_active,
-        'IMPORT to reach full battery by 4 PM',
-        required_min_soc, code, hours_until_sunrise_plus_active, hours_until_sunset_minus_active, local_time
+        'IMPORT to reach full battery by 4 PM or Opportunistic Buy',
+        required_min_soc, code, hours_until_sunrise_plus_active, hours_until_sunset_minus_active, interval_time
     )
-
 # Always sell if sell price is greater than always sell price.
 elif sell_price >= always_sell_price and battery_soc > min_sell_soc:
     action = 'export'
