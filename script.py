@@ -205,7 +205,7 @@ else:
 
 # Ensure the battery is fully charged for the evening peak event (Code = D)
 if battery_soc < full_battery and (
-    start_charging_time <= current_hour < peak_time or sell_price <= max_day_opportunistic_buy_price
+    start_charging_time <= current_hour < peak_time or buy_price <= max_day_opportunistic_buy_price
 ):
     action = 'import'
     solar = 'export'
