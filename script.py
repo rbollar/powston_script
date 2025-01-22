@@ -326,8 +326,13 @@ else:
             hours_until_sunset_minus_active, local_time
         )
 
-    # If the buy price for the current period is the lowest in the forecast and the battery SOC is less than the min SOC, charge only at night
-    elif not daytime and buy_price == min(discounted_buy_forecast) and battery_soc < required_min_soc and not (peak_time <= current_hour < peak_time_end):
+    # If the buy price for the current period is the lowest in the forecast,
+    # the battery SOC is less than the min SOC, and the buy price is <= max_buy_price, charge only at night
+    elif (not daytime and
+          buy_price == min(discounted_buy_forecast) and
+          battery_soc < required_min_soc and
+          buy_price <= max_buy_price and
+          not (peak_time <= current_hour < peak_time_end)):
         action = 'import'
         solar = 'export'
         code += 'Buy Now, min SoC, '
@@ -335,7 +340,7 @@ else:
             facility_name, buy_price, sell_price, min(discounted_buy_forecast), max(discounted_sell_forecast),
             discounted_buy_forecast.index(min(discounted_buy_forecast)), discounted_sell_forecast.index(max(discounted_sell_forecast)),
             effective_house_power, sunrise_plus_active, sunset_minus_active,
-            'Fcst: Low buy price now; IMPORT if SOC < required', required_min_soc, code, hours_until_sunrise_plus_active,
+            'Fcst: Low buy price now; IMPORT if SOC < required and price <= max', required_min_soc, code, hours_until_sunrise_plus_active,
             hours_until_sunset_minus_active, local_time
         )
 
