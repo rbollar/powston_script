@@ -54,6 +54,7 @@ solar_active_hours = 2.0  # How long after sunrise and before sunset until the s
 battery_capacity_kWh = battery_capacity / 1000  # noqa
 max_charge_rate_kW = 10.0  # noqa
 full_charge_target = 1.0  # noqa 1.0 is 100% SOC
+full_charge_discount = 0.8  # When charging to full SOC, discount the charge rate by this amount to allow more time.
 full_battery = 99.0  # Define Full Battery %
 timezone = 0.0  # noqa Local timezone +/- UTC
 peak_time = 16  # When does peak start? (Typically 4:00pm)
@@ -90,7 +91,7 @@ current_hour = local_time.hour
 remaining_energy_kWh = (100 - battery_soc) / 100 * battery_capacity_kWh
 
 # Calculate the time required to charge the battery to full (in hours)
-time_to_full_charge = remaining_energy_kWh / max_charge_rate_kW
+time_to_full_charge = remaining_energy_kWh / (max_charge_rate_kW * full_charge_discount)
 
 # Determine the time to start charging to be full by peak time
 start_charging_time = int(peak_time - time_to_full_charge) - 1
@@ -377,8 +378,6 @@ else:
 if 14 < interval_time.hour < 16 and battery_soc < 60 and action != 'import' and buy_price < 30:
     action = 'import'
     reason += ' panic buy SOC < 50'
-
-reason += f' even know {sunrise.hour}'
 
 # Declare no exports when negative
 if rrp < 0:
