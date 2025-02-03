@@ -3,7 +3,7 @@ desired_soc = 20.0
 sell_price_threshold = 85  # 20 cents
 sell_price_threshold_1 = 20  # sell in morning
 sell_price_threshold_2 = 1000  # Sell during peak
-buy_price_morning = 5  # Morning buy price
+buy_price_morning = 20  # Morning buy price threshold
 
 if 0 <= hour < 6:
     if sell_price > sell_price_threshold:
@@ -15,29 +15,36 @@ if 0 <= hour < 6:
     else:
         action = 'auto'
         reason = 'nsw: default to auto mode between midnight and 6am'
-# Stop charging/discharging between 6 AM and 1 PM
+
+# FROM 6 AM to 1 PM
 if 6 <= hour < 13:
     if sell_price > sell_price_threshold_1:
         action = 'export'
         reason = 'nsw: sell price greater than 20 cents between 6am and 1pm'
-    elif buy_price < buy_price_morning:
+    # CHANGED to require battery_soc < 25 and buy_price < 20
+    elif buy_price < buy_price_morning and battery_soc < 25:
         action = 'import'
-        reason = 'nsw: buy price less than 5 cents between 6am and 1pm'
+        reason = 'nsw: buy price less than 20 cents and battery SOC below 25% between 6am and 1pm'
     else:
         action = 'auto'
         reason = 'nsw: default to auto mode between 6am and 1pm'
-# Stop charging/discharging between 6 AM and 1 PM
+
+# FROM 1 PM to 3 PM
 if 13 <= hour < 15:
     if sell_price > sell_price_threshold_2:
         action = 'export'
-        reason = 'nsw: sell price greater than 20 cents between 6am and 1pm'
-    elif buy_price < 20:
+        reason = 'nsw: sell price greater than 20 cents between 1pm and 3pm'
+    # CHANGED battery_soc < 60 to < 25
+    elif battery_soc < 25 and buy_price < 20:
         action = 'import'
-        reason = 'nsw: buy price less than 25 cents between 1pm and 3pm'
+        reason = 'nsw: buy price less than 20 cents and battery SOC below 25% between 1pm and 3pm'
     else:
         action = 'auto'
-        reason = 'nsw: default to auto mode between 6am and 1pm'
-# Ensure 'auto' action during peak demand times from 3 PM to 9 PM, unless sell_price > 20 cents
+        reason = 'nsw: default to auto mode between 1pm and 3pm'
+
+if rrp < 0:
+    feed_in_power_limitation = 0
+    reason += f' setting feed in to {feed_in_power_limitation}'
 elif 15 <= hour < 21:
     if sell_price > sell_price_threshold and battery_soc >= desired_soc:
         action = 'export'
@@ -45,12 +52,12 @@ elif 15 <= hour < 21:
     else:
         action = 'auto'
         reason = 'nsw: hour between 3pm and 9pm or battery SOC below 20%'
-# Manage battery between 9 PM and midnight
+
 if 21 <= hour < 24:
     if sell_price > sell_price_threshold:
         action = 'export'
         reason = 'nsw: sell price greater than 20 cents between 9pm and midnight'
-    elif buy_price < 10:
+    elif buy_price < 10 and battery_soc < 30:
         action = 'import'
         reason = 'nsw: buy price less than 5 cents between 9pm and midnight'
     else:
