@@ -5,6 +5,7 @@ sell_price_threshold = 85  # 20 cents
 sell_price_threshold_1 = 20  # sell in morning
 sell_price_threshold_2 = 1000  # Sell during peak
 buy_price_morning = 5  # Morning buy price
+buy_top_up_price = 20
 # This is when we expect the solar production to meet our house load
 minutes_after_sunrise_solar_matches_load = 30
 solar_production_time = sunrise + timedelta(minutes=minutes_after_sunrise_solar_matches_load)
@@ -79,9 +80,20 @@ if (hour < 5) and battery_soc > desired_soc and sell_price > 20:
     action = 'export'
     reason = f'nsw: pre 5am use it or lose it down to {desired_soc}%'
 
-if 4 < hour and interval_time < solar_production_time and battery_soc > 10 and sell_price > 15:
+if (hour > 21 or hour < 5) and (battery_soc < desired_soc):
+    if (buy_price < buy_top_up_price):
+        best_upcoming = min(buy_forecast)
+        if buy_price < (best_upcoming + 2):
+            action = 'import'
+            reason = f'nsw: low soc and price under top up and within 2 cents of best upcoming {best_upcoming}'
+        else:
+            reason += f' not within 2 cents of best {best_upcoming}'
+    else:
+        reason += f' waiting to top up {buy_price} < {buy_top_up_price}'
+
+if 4 < hour < 8 and interval_time < solar_production_time and battery_soc > 10 and sell_price > 15:
     action = 'export'
-    reason = f'nsw: before solar production time use it or lose it {solar_production_time}'
+    reason += f'nsw: before solar production time use it or lose it {solar_production_time}'
 
 if rrp > 800 and battery_soc > min_sell_soc:
     action = 'export'
