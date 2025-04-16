@@ -1,0 +1,109 @@
+type: grid
+columns: 2
+cards:
+  - type: custom:button-card
+    entity: sensor.powston_inverter_43923_lv_buy_price
+    name: Buy
+    show_name: true
+    show_state: true
+    styles:
+      card:
+        - height: 180px
+      name:
+        - font-size: 26px
+        - font-weight: bold
+        - color: '#E53935'
+      state:
+        - font-size: 0px
+    state_display: >
+      [[[
+        let raw = parseFloat(entity.state);
+        let color = '#FBC02D'; // default yellow
+        let animClass = 'price-anim';
+        let display = '';
+        
+        if (raw < 10 || raw < 0) {
+          color = '#43A047';  // green
+          animClass += ' flash';
+        } else if (raw > 40) {
+          color = '#E53935';  // red
+          animClass += ' flash';
+        }
+
+        if (raw >= 100) {
+          display = `$${(raw / 100).toFixed(2)}<span style="font-size:28px;">/kWh</span>`;
+        } else {
+          display = `${raw.toFixed(1)}<span style="font-size:28px;"> c/kWh</span>`;
+        }
+
+        return `<span class="${animClass}" style="font-size:60px; font-weight:bold; color:${color};">${display}</span>`;
+      ]]]
+    extra_styles: |
+      @keyframes pulse {
+        0% { transform: scale(1); }
+        50% { transform: scale(1.15); }
+        100% { transform: scale(1); }
+      }
+      @keyframes flash {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.2; }
+      }
+      .price-anim {
+        animation: pulse 0.6s ease;
+        display: inline-block;
+      }
+      .flash {
+        animation: flash 1s ease-in-out infinite, pulse 0.6s ease;
+      }
+
+  - type: custom:button-card
+    entity: sensor.powston_inverter_43923_lv_sell_price
+    name: Sell
+    show_name: true
+    show_state: true
+    styles:
+      card:
+        - height: 180px
+      name:
+        - font-size: 26px
+        - font-weight: bold
+        - color: '#43A047'
+      state:
+        - font-size: 0px
+    state_display: >
+      [[[
+        let raw = parseFloat(entity.state);
+        let color = '#43A047';  // default green
+        let animClass = 'price-anim';
+        let display = '';
+
+        if (raw < 0) {
+          color = '#E53935';  // red
+          animClass += ' flash';
+        }
+
+        if (raw >= 100) {
+          display = `$${(raw / 100).toFixed(2)}<span style="font-size:28px;">/kWh</span>`;
+        } else {
+          display = `${raw.toFixed(1)}<span style="font-size:28px;"> c/kWh</span>`;
+        }
+
+        return `<span class="${animClass}" style="font-size:60px; font-weight:bold; color:${color};">${display}</span>`;
+      ]]]
+    extra_styles: |
+      @keyframes pulse {
+        0% { transform: scale(1); }
+        50% { transform: scale(1.15); }
+        100% { transform: scale(1); }
+      }
+      @keyframes flash {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.2; }
+      }
+      .price-anim {
+        animation: pulse 0.6s ease;
+        display: inline-block;
+      }
+      .flash {
+        animation: flash 1s ease-in-out infinite, pulse 0.6s ease;
+      }
