@@ -1,0 +1,494 @@
+# Priority Rules Decision
+# Powston Inverter Decision Script v. 2.0
+# Comments to powston.com.au@bol.la
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚡ PRICING DECISIONS (cents/kWh)
+# ─────────────────────────────────────────────────────────────────────────────
+max_am_buy_price = 20.0            # Max import price for AM peak charge
+min_sell_price = 25.0              # Min price to export energy
+min_day_sell_price = 1.0           # Daytime threshold to allow export, mainly to avoid curtail
+always_sell_price = 75.0           # Force export if sell price exceeds this
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 🔋 BATTERY DISCHARGE & MARGIN SETTINGS
+# ─────────────────────────────────────────────────────────────────────────────
+min_sell_soc = 20                  # Min SOC (%) to allow export
+discharge_discount = 0.80          # Use 80% of available discharge capacity
+desired_margin = 5.0               # Margin (c/kWh) to trigger AM import
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 🔮 FORECAST ADJUSTMENTS
+# ─────────────────────────────────────────────────────────────────────────────
+uncertainty_discount = 0.05        # Discount applied per forecast hour
+future_forecast_hours = 8.0        # Max hours to consider in forecasts
+forecast_margin_kwh = 2.0          # Buffer to avoid undercharging
+
+# Minimum house power usage to accept in the forecast (in Wh) in the event reported house_power is missing
+# Day/Night fallback minimum house load (Wh per inverter)
+min_day_house_power = 2000.0
+min_night_house_power = 1000.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 🌞 FACILITY & BATTERY CONFIGURATION
+# ─────────────────────────────────────────────────────────────────────────────
+facility_name = "65 Qld"           # Facility identifier
+num_inverters = 2                  # Total number of inverters
+inverter_ids = [43923, 43924]      # Inverter IDs for SOC averaging
+solar_active_hours = 2.0           # Hours before/after sun to activate PV
+max_charge_rate_kW = 10.0          # Max charge rate (kW)
+full_charge_discount = 0.8         # Discount for full charge planning
+full_battery = 100.0               # Define 100% SOC as full
+peak_time = 16                     # Peak window start (hour)
+peak_time_end = 20                 # Peak window end (hour) 20 = 8:59:59 pm
+
+# End user-entered data
+
+battery_capacity_kWh = battery_capacity / 1000 if isinstance(battery_capacity, (int, float)) and battery_capacity > 0 else 25.6  # Convert to kWh
+
+#
+# MQTT Variables Imported from Home Assistant
+#
+
+# MQTT Variables with fallback to safe defaults
+solar_estimate_remaining = mqtt_data.get('solar_estimate', {}).get('solar_estimate_remaining')
+if solar_estimate_remaining is None:
+    solar_estimate_remaining = 0.0
+
+solar_surplus_deficit = mqtt_data.get('solar_estimate', {}).get('solar_surplus_deficit')
+if solar_surplus_deficit is None:
+    solar_surplus_deficit = 0.0
+
+#
+# Combine Inverter Battery State of Charge
+#
+try:
+    battery_socs = [
+        inverters.get(f'inverter_params_{inv_id}', {}).get('battery_soc')
+        for inv_id in inverter_ids
+    ]
+    # Remove None values before computing average
+    valid_socs = [soc for soc in battery_socs if isinstance(soc, (int, float))]
+
+    # Use battery_soc only if it's valid and no inverter SoCs are usable
+    combined_battery_soc = (
+        sum(valid_socs) / len(valid_socs)
+        if valid_socs else (battery_soc if isinstance(battery_soc, (int, float)) else 0.0)
+    )
+except Exception:
+    combined_battery_soc = battery_soc if isinstance(battery_soc, (int, float)) else 0.0
+
+#
+# --- Forecast and price safety checks ---
+#
+
+# Ensure forecast lists are valid
+if not isinstance(buy_forecast, list):
+    buy_forecast = []
+if not isinstance(sell_forecast, list):
+    sell_forecast = []
+
+# Filter out None and invalid entries
+buy_forecast = [p for p in buy_forecast if isinstance(p, (int, float))]
+sell_forecast = [p for p in sell_forecast if isinstance(p, (int, float))]
+
+# Fallback if still empty
+if not buy_forecast:
+    buy_forecast = [9999.0]
+if not sell_forecast:
+    sell_forecast = [0.0]
+
+# Ensure key variables are valid floats
+buy_price = buy_price if isinstance(buy_price, (int, float)) else 0.0
+sell_price = sell_price if isinstance(sell_price, (int, float)) else 0.0
+solar_surplus_deficit = solar_surplus_deficit if isinstance(solar_surplus_deficit, (int, float)) else 0.0
+battery_capacity = battery_capacity if isinstance(battery_capacity, (int, float)) and battery_capacity > 0 else 1.0
+
+def update_reason(
+    facility_name, local_time, base_reason, code,                                                                      # Descriptive Context
+    buy_price, sell_price, lowest_buy_price, hours_until_lowest_buy,                                                   # Pricing
+    highest_sell_price, hours_until_highest_sell,                                                                      # Pricing Continued
+    required_min_soc, house_load, solar_estimate_remaining, solar_surplus_deficit,                                     # Battery Load
+    sunrise_plus_active, sunset_minus_active, hours_until_sunrise_plus_active, hours_until_sunset_minus_active         # Time-Based
+):
+
+    # Ensure all potentially None values are safe to format
+    def safe_float(val, fallback=0.0):
+        return fallback if val is None else val
+
+    #
+    # Returns:
+    # - str: The updated reason message, trimmed to 256 characters if necessary.
+    #
+
+    reason = (f"{facility_name}: {base_reason} Buy: {buy_price:.1f}c, Sell: {sell_price:.1f}c, "
+              f"Low Buy: {lowest_buy_price:.1f}c ({hours_until_lowest_buy}h), "
+              f"High Sell: {highest_sell_price:.1f}c ({hours_until_highest_sell}h), "
+              f"Load: {house_load:,.0f}W, "
+              f"Code: {code} Rem. PV Gen: {solar_estimate_remaining:.1f}kWh, "
+              f"PV Fcst. +/-: {solar_surplus_deficit:.1f}kWh. {local_time}")
+
+    return reason[:256]
+
+# Initialize the code tracking variable
+code = ''
+
+# Determine Local Time
+local_time = interval_time  # + timedelta(hours=timezone)
+
+current_hour = local_time.hour
+
+# Calculate the energy required to reach full charge (in kWh)
+remaining_energy_kWh = (100 - combined_battery_soc) / 100 * battery_capacity_kWh
+
+# Calculate the time required to charge the battery to full (in hours)
+time_to_full_charge = remaining_energy_kWh / (max_charge_rate_kW * full_charge_discount) if max_charge_rate_kW * full_charge_discount else 0.1
+
+# Determine the time to start charging to be full by peak time
+start_charging_time = int(peak_time - time_to_full_charge) - 1  # noqa
+
+# Normalize sunrise/sunset if they're in the future relative to local_time
+normalized_sunrise = sunrise
+normalized_sunset = sunset
+
+if sunrise > local_time:
+    normalized_sunrise = sunrise - timedelta(days=1)
+if sunset > local_time:
+    normalized_sunset = sunset - timedelta(days=1)
+
+# Adjusted sunrise and sunset times with solar active hours
+try:
+    sunrise_plus_active = normalized_sunrise + timedelta(hours=solar_active_hours)
+    sunset_minus_active = normalized_sunset - timedelta(hours=solar_active_hours)
+
+    # Calculate hours until sunrise plus active
+    hours_until_sunrise_plus_active = (sunrise_plus_active - local_time).total_seconds() / 3600.0
+    if hours_until_sunrise_plus_active > 24:
+        hours_until_sunrise_plus_active -= 24
+
+    # Calculate hours until sunset minus active
+    if local_time <= sunset_minus_active:
+        hours_until_sunset_minus_active = (sunset_minus_active - local_time).total_seconds() / 3600.0
+    else:
+        next_sunset_minus_active = sunset_minus_active + timedelta(days=1)
+        hours_until_sunset_minus_active = (next_sunset_minus_active - local_time).total_seconds() / 3600.0
+except Exception:
+    hours_until_sunrise_plus_active = None
+    hours_until_sunset_minus_active = None
+
+# Determine if it's daytime based on PV generation and time before peak.
+daytime = local_time is not None and sunrise_plus_active is not None and local_time >= sunrise_plus_active and local_time.hour < peak_time
+
+# Adjust the reserve factor to decrease until solar_active_hours after sunrise
+if (
+    hours_until_sunrise_plus_active is not None and
+    isinstance(solar_active_hours, (int, float)) and
+    solar_active_hours > 0
+):
+    if 0 <= hours_until_sunrise_plus_active <= solar_active_hours:
+        reserve_factor = max(0, 1 - hours_until_sunrise_plus_active / solar_active_hours)
+    else:
+        reserve_factor = 1
+else:
+    reserve_factor = 1
+
+# Check if buy_forecast is empty
+if not buy_forecast:
+    hours_until_lowest_buy = 99
+else:
+    # Identify the index of the lowest buy price in the forecast (How many hours in the future)
+    index_lowest_buy = buy_forecast.index(min(buy_forecast))
+
+    # Calculate the time until the lowest buy price
+    hours_until_lowest_buy = index_lowest_buy
+
+# Ensure house power is at least min_house_power for the current hour divided by the number of inverters
+current_hour = local_time.hour
+
+if not isinstance(house_power, (int, float)):
+    house_power = 0.0
+
+if 7 <= current_hour < 22:
+    effective_min_house_power = min_day_house_power
+else:
+    effective_min_house_power = min_night_house_power
+
+effective_house_power = max(house_power / num_inverters, effective_min_house_power / num_inverters)
+
+# Estimate power consumption until the lowest buy price period
+estimated_consumption_kW = effective_house_power * hours_until_lowest_buy
+
+# Calculate the required minimum SOC to ensure the battery lasts until the lowest buy price period
+if battery_capacity is None or battery_capacity == 0:
+    battery_capacity = 1  # Avoid division by zero; or fallback to known default
+required_min_soc = reserve_factor * (estimated_consumption_kW / battery_capacity if battery_capacity else 1) * 100  # Convert to percentage
+
+# Initialize the forecasts with default values
+discounted_buy_forecast = []
+discounted_sell_forecast = []
+
+try:
+    # Validate input types only (not values)
+    if not isinstance(buy_forecast, list):
+        raise ValueError("Invalid buy_forecast")
+    if not isinstance(sell_forecast, list):
+        raise ValueError("Invalid sell_forecast")
+
+    # Apply the discount to forecasted buy prices up to future_forecast_hours
+    for i in range(int(future_forecast_hours)):
+        if i < len(buy_forecast):
+            discounted_buy_forecast.append(buy_forecast[i] * ((1 + uncertainty_discount) ** i))
+
+    # Apply the discount to forecasted sell prices up to future_forecast_hours
+    for i in range(int(future_forecast_hours)):
+        if i < len(sell_forecast):
+            discounted_sell_forecast.append(sell_forecast[i] * ((1 - uncertainty_discount) ** i))
+
+except ValueError as e:  # noqa
+    # If an error occurs, assign default values
+    discounted_buy_forecast = [100000] * int(future_forecast_hours)
+    discounted_sell_forecast = [1] * int(future_forecast_hours)
+
+# Calculate the index of the cutoff period for future forecasts based on sunrise and solar active hours
+cutoff_index = min(len(discounted_buy_forecast), int(solar_active_hours))  # noqa
+
+# Charge for Peak Planner Function
+
+def charging_plan_inline(current_hour,
+                         combined_battery_soc,
+                         solar_surplus_deficit,
+                         discounted_buy_forecast,
+                         battery_capacity_Wh,
+                         full_battery,
+                         max_charge_rate_W,
+                         peak_time,
+                         future_forecast_hours,
+                         forecast_margin_kwh,
+                         max_am_buy_price,
+                         buy_price):
+    if combined_battery_soc >= full_battery:
+        return False, "Battery already at or above full target.", [], []
+
+    battery_capacity_kWh = battery_capacity_Wh / 1000
+    max_charge_rate_kW = max_charge_rate_W / 1000
+
+    required_kWh = (full_battery - combined_battery_soc) / 100 * battery_capacity_kWh
+    adjusted_required_kWh = required_kWh + forecast_margin_kwh
+
+    # If solar is expected to cover load and buffer, skip
+    if (solar_surplus_deficit - forecast_margin_kwh) >= 0:
+        return False, f"Solar expected to cover load + buffer — {adjusted_required_kWh:.2f}kWh.", [], []
+
+    # Immediate charge if current buy price is best
+    if buy_price <= min(discounted_buy_forecast):
+        return True, f"Current price {buy_price:.2f}c is best — charge now to meet {adjusted_required_kWh:.2f}kWh.", [0], [(current_hour, buy_price)]
+
+    forecast_window = []
+    for i, price in enumerate(discounted_buy_forecast):
+        if (current_hour + i) <= peak_time and price <= max_am_buy_price:
+            forecast_window.append((i, price))
+
+    if not forecast_window:
+        return False, "No forecast data available before peak under max price.", [], []
+
+    sorted_hours = sorted(forecast_window, key=lambda x: x[1])
+    required_hours = int(adjusted_required_kWh / max_charge_rate_kW + 0.999) if max_charge_rate_kW else 1
+
+    hours_to_charge = [i for i, _ in sorted_hours[:required_hours]]
+    schedule = [(current_hour + i, price) for i, price in sorted_hours[:required_hours]]
+
+    if 0 in hours_to_charge:
+        return True, f"Charging to meet {adjusted_required_kWh:.2f} kWh before peak.", hours_to_charge, schedule
+    else:
+        return False, f"Not optimal hour for charging. Required {adjusted_required_kWh:.2f} kWh.", hours_to_charge, schedule
+
+result = charging_plan_inline(
+    current_hour=current_hour,
+    combined_battery_soc=combined_battery_soc,
+    solar_surplus_deficit=solar_surplus_deficit,
+    discounted_buy_forecast=discounted_buy_forecast,
+    battery_capacity_Wh=battery_capacity,
+    full_battery=full_battery,
+    max_charge_rate_W=optimal_charging,
+    peak_time=peak_time,
+    future_forecast_hours=future_forecast_hours,
+    forecast_margin_kwh=forecast_margin_kwh,
+    max_am_buy_price=max_am_buy_price,
+    buy_price=buy_price
+)
+
+charge_now = result[0]
+charge_now_reason = result[1]
+optimal_hours = result[2]  # noqa
+schedule = result[3]  # noqa
+
+#
+# Begin decision evaluations
+#
+
+# ── Forced RRP Export Logic ──
+# Powston will bypass your script and immediately export at full power
+# whenever the AEMO wholesale RRP exceeds `always_export_rrp`.
+#
+# This short-circuit occurs *before* your script runs. If triggered, your logic is skipped.
+# The value of `always_export_rrp` is stored globally and persists between runs.
+#
+# Your script runs more frequently than Powston's 5-minute decision window.
+# This means the `always_export_rrp` value is updated with each execution of your script,
+# and will apply to the *next* decision window where RRP is evaluated.
+#
+# The default threshold allows export when RRP exceeds the value implied by your
+# `always_sell_price` (e.g., 75c → $750/MWh).
+# If the battery has sufficient SoC, we raise the threshold, allowing depletion during rare price spikes.
+
+always_export_rrp = always_sell_price * 1000  # Default threshold (e.g., 75c → $750/MWh)
+
+# Raise threshold when SoC is sufficient to handle deeper discharge
+if combined_battery_soc >= min_sell_soc:
+    always_export_rrp = always_sell_price * 10000  # noqa Elevated threshold (~$7.50 → $7,500/MWh)
+
+# --- Forced Export: Highest Priority Rules ---
+
+# Forced Sell override (second priority, only if RRP didn’t trigger)
+if sell_price >= always_sell_price:
+    if combined_battery_soc >= min_sell_soc:
+        action = 'export'
+        solar = 'export'
+        code += 'Force Sell, '
+        base_reason = f"Sell Price {sell_price:.1f}c ≥ Always Threshold {always_sell_price}c"
+    elif sell_price >= always_sell_price * 10:
+        action = 'export'
+        solar = 'export'
+        code += 'Force Sell Extreme, '
+        base_reason = (
+            f"Sell Price {sell_price:.1f}c ≥ 10× Threshold ({always_sell_price}c), "
+            f"but SOC {combined_battery_soc:.1f}% < {min_sell_soc}%"
+        )
+    else:
+        code += 'Force Sell Missed (SOC), '
+        base_reason = f"Sell Price {sell_price:.1f}c OK, but SOC {combined_battery_soc:.1f}% < {min_sell_soc}%"
+
+# --- Only evaluate the rest of the script if neither override triggered ---
+else:
+
+    #
+    # Pre-emptively discharge if negative FiT forecast and solar can refill the battery
+    #
+
+    preempt_floor_soc = 20  # Minimum SOC you're willing to go down to
+    preempt_buffer_kWh = forecast_margin_kwh  # Extra margin to ensure enough PV surplus
+
+    #
+    # Set default behavior for Peak, day & night if no other conditions apply
+    #
+    # --- TIME OF DAY CLASSIFICATION ---
+    if peak_time <= current_hour <= peak_time_end:
+        time_period = 'Peak'
+    elif daytime:
+        time_period = 'Day'
+    else:
+        time_period = 'Night'
+
+    action = 'auto'
+    solar = 'export'
+    code += f'{time_period}: '
+    base_reason = code + 'Normal'
+
+    # --- PRIORITY-ALIGNED DECISION TREE ---
+
+    # 1. Sell immediately if conditions are profitable
+    if (
+        combined_battery_soc > required_min_soc and
+        sell_price >= min(discounted_buy_forecast) + desired_margin and
+        sell_price >= min_sell_price
+    ):
+        action = 'export'
+        solar = 'export'
+        code += 'Sell Now, '
+        base_reason = 'High Sell Price: Export immediately'
+
+    # 2. Ensure battery is full for peak (either by plan or emergency fill)
+    elif charge_now and daytime:
+        action = 'import'
+        solar = 'export'
+        code += 'Chg for Peak, '
+        base_reason = charge_now_reason
+
+    elif 14 < interval_time.hour < 16 and combined_battery_soc < 60 and action != 'import' and buy_price < 30:
+        action = 'import'
+        solar = 'export'
+        code += 'Panic, '
+        base_reason = 'Panic buy: Fill before evening peak'
+
+    # 3a. Avoid curtailment with preemptive discharge
+    elif (
+        daytime and
+        any(p < 0 for p in sell_forecast if p is not None) and
+        sell_price >= min_day_sell_price and
+        combined_battery_soc > preempt_floor_soc and
+        solar_surplus_deficit is not None
+    ):
+        available_discharge_kWh = ((combined_battery_soc - preempt_floor_soc) / 100 * battery_capacity_kWh) * discharge_discount
+
+        if solar_surplus_deficit > (available_discharge_kWh + preempt_buffer_kWh):
+            action = 'export'
+            solar = 'export'
+            code += 'Pre-emptive Discharge, '
+            base_reason = 'Avoid Curtailment: Pre-emptive discharge'
+
+    # 3b. Curtail if battery full and sell price is negative
+    elif sell_price < 0.0 and combined_battery_soc >= full_battery:
+        action = 'auto'
+        solar = 'curtail'
+        code += 'Neg Sell: Curtail, '
+        base_reason = 'Curtail: Battery full and negative FiT'
+
+    # 4. Buy overnight if we can profitably sell before solar comes online
+    elif (
+        local_time < sunrise and
+        combined_battery_soc is not None and
+        combined_battery_soc < min_sell_soc and
+        buy_price is not None and
+        max_am_buy_price is not None and
+        desired_margin is not None and
+        discounted_sell_forecast and
+        battery_capacity_kWh is not None and
+        hours_until_sunrise_plus_active is not None and
+        (max(discounted_sell_forecast) - buy_price) >= desired_margin and
+        hours_until_sunrise_plus_active <= 2
+    ):
+        pre_solar_export_kWh = min(
+            10 * hours_until_sunrise_plus_active,
+            battery_capacity_kWh * (1 - combined_battery_soc / 100)
+        )
+
+        if pre_solar_export_kWh > 1.0:
+            action = 'import'
+            solar = 'export'
+            code += 'AM Opportunistic Buy, '
+            base_reason = (
+                f"Import {pre_solar_export_kWh:.1f}kWh overnight: "
+                f"{buy_price:.1f}c now, {max(discounted_sell_forecast):.1f}c later, "
+                f"before solar at {sunrise_plus_active.strftime('%H:%M')}"
+            )
+
+    # Optional: log missed opportunity if SOC too low
+    elif sell_price >= max(discounted_sell_forecast) and sell_price >= min_sell_price:
+        code += 'Could Sell; lo SoC, '
+        base_reason = 'Sell opportunity missed: SOC too low'
+
+    # Append price context
+    if action == 'import':
+        base_reason += f" (Buy: {buy_price:.1f}c)"
+    elif action == 'export':
+        base_reason += f" (Sell: {sell_price:.1f}c)"
+
+# Define the Reason return string:
+
+reason = update_reason(
+    facility_name, local_time, base_reason, code,                                                                      # Descriptive Context
+    buy_price, sell_price, min(discounted_buy_forecast), discounted_buy_forecast.index(min(discounted_buy_forecast)),  # Pricing
+    max(discounted_sell_forecast), discounted_sell_forecast.index(max(discounted_sell_forecast)),                      # Pricing Continued
+    required_min_soc, effective_house_power, solar_estimate_remaining, solar_surplus_deficit,                          # Battery Load
+    sunrise_plus_active, sunset_minus_active, hours_until_sunrise_plus_active, hours_until_sunset_minus_active         # Time-Based
+)
