@@ -1,0 +1,631 @@
+kiosk_mode:
+  user_settings:
+    - users:
+        - Kiosk
+      hide_sidebar: true
+      hide_overflow: true
+views:
+  - title: Deck
+    path: deck
+    type: sections
+    icon: mdi:home
+    max_columns: 2
+    sections:
+      - type: grid
+        cards:
+          - type: grid
+            columns: 2
+            square: false
+            cards:
+              - type: light
+                entity: light.deck_lights
+                name: ' '
+              - type: button
+                entity: fan.deck_fans
+                name: Fans
+                show_name: true
+                show_icon: true
+                tap_action:
+                  action: toggle
+          - square: false
+            type: grid
+            columns: 4
+            cards:
+              - type: button
+                entity: switch.deck_heater_switch_0
+                name: Heater
+                icon: mdi:radiator
+                show_name: true
+                show_icon: true
+                tap_action:
+                  action: toggle
+              - type: button
+                entity: switch.under_led_floods_switch_0
+                name: Under Floods
+                icon: mdi:light-flood-down
+                show_name: true
+                show_icon: true
+                tap_action:
+                  action: toggle
+              - type: light
+                entity: light.shellywalldisplay_000822b31e98_switch_0
+                name: Under Pad
+                icon: mdi:led-strip
+      - type: grid
+        cards:
+          - type: custom:clock-weather-card-hui-icons
+            entity: weather.maroochy_river
+    badges:
+      - type: entity
+        show_name: false
+        show_state: true
+        show_icon: true
+        entity: sensor.maroochy_river_outside_temperature
+      - type: entity
+        show_name: false
+        show_state: true
+        show_icon: true
+        entity: sensor.living_temperature
+        icon: mdi:home-thermometer
+      - type: entity
+        show_name: false
+        show_state: true
+        show_icon: true
+        entity: sensor.pv_battery_state_of_charge
+        icon: mdi:lightning-bolt
+      - type: entity
+        show_name: false
+        show_state: true
+        show_icon: true
+        entity: sensor.water_tank_percent_full
+        icon: mdi:water
+      - type: entity
+        show_name: false
+        show_state: true
+        show_icon: true
+        entity: sensor.0c7fedc6d88c_temperature_value_shown_on_app_display_t10
+        icon: mdi:shower-head
+    header:
+      layout: center
+      badges_position: bottom
+      badges_wrap: scroll
+    cards: []
+  - type: sections
+    max_columns: 4
+    title: Lights
+    path: lights
+    icon: mdi:lightbulb
+    sections:
+      - type: grid
+        cards:
+          - square: true
+            type: grid
+            cards:
+              - type: light
+                entity: light.deck_far_east
+                name: Far East
+                icon: mdi:light-recessed
+              - type: light
+                entity: light.deck_east
+                name: East
+                icon: mdi:light-recessed
+              - type: light
+                entity: light.deck_west
+                name: West
+                icon: mdi:light-recessed
+              - type: light
+                entity: light.deck_far_west
+                name: Far West
+                icon: mdi:light-recessed
+            columns: 4
+          - square: true
+            type: grid
+            cards:
+              - type: light
+                entity: light.deck_wall
+                name: Wall
+              - type: light
+                entity: light.deck_west_spot
+                name: Spot
+                icon: mdi:spotlight-beam
+              - type: light
+                entity: light.under_pano_floodlight
+                name: Under Flood
+              - type: light
+                entity: light.shellywalldisplay_000822b31e98_switch_0
+            columns: 4
+          - square: true
+            type: grid
+            cards:
+              - show_name: true
+                show_icon: true
+                type: button
+                entity: fan.skyfandc_3
+                name: East
+              - show_name: true
+                show_icon: true
+                type: button
+                entity: fan.skyfandc_2
+                name: West
+            columns: 3
+  - title: Weather
+    path: weather
+    type: sections
+    icon: mdi:temperature-celsius
+    max_columns: 1
+    sections:
+      - type: grid
+        cards:
+          - type: grid
+            columns: 2
+            square: false
+            cards:
+              - type: entity
+                entity: sensor.maroochy_river_outside_temperature
+                name: Temp
+              - type: entity
+                entity: sensor.maroochy_river_outside_humidity
+                name: Humidity
+          - type: grid
+            columns: 3
+            square: false
+            cards:
+              - type: entity
+                entity: sensor.maroochy_river_new_wind_direction
+                name: Wind
+              - type: entity
+                entity: sensor.maroochy_river_new_wind
+                name: Speed
+                state_color: false
+              - type: entity
+                entity: sensor.maroochy_river_new_wind_gust
+                name: Gust
+          - type: grid
+            columns: 3
+            square: false
+            cards:
+              - type: entity
+                entity: sensor.maroochy_river_rain_today
+                name: Today
+              - type: entity
+                entity: sensor.maroochy_river_rain_intensity
+                name: Intensity
+              - type: entity
+                entity: sensor.maroochy_river_rain_storm
+                name: Storm
+          - type: grid
+            columns: 2
+            square: false
+            cards:
+              - type: entity
+                entity: sensor.maroochy_river_pressure
+                name: Pressure
+              - type: entity
+                entity: sensor.maroochy_river_pressure_trend
+                name: Trend
+  - title: Weather (Imperial)
+    path: weather_imperial
+    type: sections
+    icon: mdi:temperature-fahrenheit
+    max_columns: 1
+    sections:
+      - type: grid
+        cards:
+          - type: grid
+            columns: 2
+            square: false
+            cards:
+              - type: entity
+                entity: sensor.outside_temperature_degf
+                name: Temp
+              - type: entity
+                entity: sensor.maroochy_river_outside_humidity
+                name: Humidity (%)
+          - type: grid
+            columns: 3
+            square: false
+            cards:
+              - type: entity
+                entity: sensor.maroochy_river_new_wind_direction
+                name: Wind Dir
+              - type: entity
+                entity: sensor.wind_speed_mph
+                name: Speed
+              - type: entity
+                entity: sensor.wind_gust_mph
+                name: Gust
+          - type: grid
+            columns: 3
+            square: false
+            cards:
+              - type: entity
+                entity: sensor.rain_today_in
+                name: Today
+              - type: entity
+                entity: sensor.rain_intensity_in_h
+                name: Intensity
+              - type: entity
+                entity: sensor.storm_rain_in
+                name: Storm
+          - type: grid
+            columns: 2
+            square: false
+            cards:
+              - type: entity
+                entity: sensor.pressure_inhg
+                name: Pressure
+              - type: entity
+                entity: sensor.maroochy_river_pressure_trend
+                name: Trend
+  - type: sections
+    max_columns: 3
+    title: Power
+    path: power
+    icon: mdi:lightning-bolt
+    sections:
+      - type: grid
+        cards:
+          - type: custom:gauge-card-pro
+            entity: sensor.pv_power_kw
+            segments:
+              - from: 0
+                color: red
+              - from: 25
+                color: '#FFA500'
+              - from: 50
+                color: rgb(255, 255, 0)
+              - from: 100
+                color: var(--green-color)
+            needle: true
+            gradient: true
+            titles:
+              primary: '{{ state_attr(entity, ''friendly_name'') }}'
+            gradient_resolution: medium
+            max: 29.92
+            grid_options:
+              columns: full
+              rows: auto
+          - square: false
+            type: grid
+            cards:
+              - type: conditional
+                conditions:
+                  - entity: sensor.powston_inverter_43923_battery_current
+                    state_not: unavailable
+                  - condition: numeric_state
+                    entity: sensor.powston_inverter_43923_battery_current
+                    below: 0
+                  - entity: sensor.powston_inverter_43923_action
+                    state_not: import
+                  - entity: sensor.powston_inverter_43924_action
+                    state_not: import
+                card:
+                  type: gauge
+                  entity: sensor.pv_battery_state_of_charge
+                  name: PV Battery (Solar Charging)
+                  needle: false
+                  severity:
+                    green: 0
+                    yellow: 101
+                    red: 200
+                  unit: '%'
+                  tap_action:
+                    action: navigate
+                    navigation_path: /dashboard-shelly/power
+              - type: conditional
+                conditions:
+                  - entity: sensor.powston_inverter_43923_battery_current
+                    state_not: unavailable
+                  - condition: numeric_state
+                    entity: sensor.powston_inverter_43923_battery_current
+                    below: 0
+                  - entity: sensor.powston_inverter_43923_action
+                    state: import
+                card:
+                  type: gauge
+                  entity: sensor.pv_battery_state_of_charge
+                  name: PV Battery (Grid Charging)
+                  needle: false
+                  severity:
+                    red: 0
+                    yellow: 101
+                    green: 200
+                  unit: '%'
+                  tap_action:
+                    action: navigate
+                    navigation_path: /dashboard-shelly/power
+              - type: conditional
+                conditions:
+                  - entity: sensor.powston_inverter_43923_battery_current
+                    state_not: unavailable
+                  - condition: numeric_state
+                    entity: sensor.powston_inverter_43923_battery_current
+                    below: 0
+                  - entity: sensor.powston_inverter_43924_action
+                    state: import
+                  - condition: state
+                    entity: sensor.powston_inverter_43923_action
+                    state_not: import
+                card:
+                  type: gauge
+                  entity: sensor.pv_battery_state_of_charge
+                  name: PV Battery (Grid Charging)
+                  needle: false
+                  severity:
+                    red: 0
+                    yellow: 101
+                    green: 200
+                  unit: '%'
+                  tap_action:
+                    action: navigate
+                    navigation_path: /dashboard-shelly/power
+              - type: conditional
+                conditions:
+                  - entity: sensor.powston_inverter_43923_battery_current
+                    state_not: unavailable
+                  - condition: numeric_state
+                    entity: sensor.powston_inverter_43923_battery_current
+                    above: -0.01
+                card:
+                  type: gauge
+                  entity: sensor.pv_battery_state_of_charge
+                  name: PV Battery (Discharging)
+                  needle: false
+                  severity:
+                    green: 101
+                    yellow: 0
+                    red: 200
+                  unit: '%'
+                  tap_action:
+                    action: navigate
+                    navigation_path: /dashboard-shelly/power
+            columns: 1
+            grid_options:
+              columns: full
+              rows: 3
+          - type: custom:button-card
+            entity: sensor.powston_reason_last_valid
+            show_icon: false
+            show_name: false
+            show_state: true
+            styles:
+              card:
+                - padding: 16px
+                - font-size: 20px
+                - background-color: '#000000'
+                - color: '#ffffff'
+      - type: grid
+        cards:
+          - square: false
+            type: grid
+            cards:
+              - type: custom:button-card
+                entity: sensor.localvolts_energy_sell_price_cents
+                name: Sell
+                show_name: false
+                show_state: true
+                show_icon: false
+                styles:
+                  card:
+                    - height: 90px
+                    - padding: 0
+                    - box-shadow: none
+                    - border: none
+                    - background-color: |
+                        [[[
+                          const updated = new Date(entity.last_changed);
+                          const now = new Date();
+                          const diff = (now - updated) / 60000;
+                          if (diff > 30) return 'rgba(0,0,0,0.15)';
+                          if (diff > 10) return 'rgba(0,0,0,0.05)';
+                          return 'transparent';
+                        ]]]
+                  state:
+                    - font-size: 0px
+                state_display: |
+                  [[[
+                    let raw = parseFloat(entity.state);
+                    let color = '#43A047';
+                    let display = '';
+
+                    if (raw < 0) {
+                      color = '#E53935';
+                    }
+
+                    if (raw >= 100) {
+                      display = `<span style="font-size:20px;">$</span>${(raw / 100).toFixed(2)}<span style="font-size:28px;">/kWh</span>`;
+                    } else {
+                      display = `${raw.toFixed(1)}<span style="font-size:20px;"> c/kWh</span>`;
+                    }
+
+                    const updatedTime = new Date(entity.last_changed);
+                    const now = new Date();
+                    const diffMins = Math.floor((now - updatedTime) / 60000);
+                    let timeDisplay = 'just now';
+                    if (diffMins === 1) timeDisplay = '1 min ago';
+                    else if (diffMins > 1) timeDisplay = `${diffMins} mins ago`;
+
+                    return `
+                      <div style="display:flex; align-items:center; height:100%;">
+                        <div style="font-size:24px; font-weight:bold; color:#ffffff; writing-mode: vertical-rl; transform: rotate(180deg); margin-right:30px; margin-top:-6px;">Sell</div>
+                        <div>
+                          <div class="price-anim" style="font-size:36px; font-weight:bold; color:${color};">${display}</div>
+                          <div style="font-size:12px; color:#999999; margin-top:4px;">Updated: ${timeDisplay}</div>
+                        </div>
+                      </div>
+                    `;
+                  ]]]
+                extra_styles: |
+                  @keyframes pulse {
+                    0% { transform: scale(1); }
+                    50% { transform: scale(1.1); }
+                    100% { transform: scale(1); }
+                  }
+                  .price-anim {
+                    animation: pulse 0.6s ease;
+                    display: inline-block;
+                  }
+              - type: custom:button-card
+                entity: sensor.localvolts_energy_buy_price_cents
+                name: Buy
+                show_name: false
+                show_state: true
+                show_icon: false
+                styles:
+                  card:
+                    - height: 90px
+                    - padding: 0
+                    - box-shadow: none
+                    - border: none
+                    - background-color: |
+                        [[[
+                          const updated = new Date(entity.last_changed);
+                          const now = new Date();
+                          const diff = (now - updated) / 60000;
+                          if (diff > 30) return 'rgba(0,0,0,0.15)';
+                          if (diff > 10) return 'rgba(0,0,0,0.05)';
+                          return 'transparent';
+                        ]]]
+                  state:
+                    - font-size: 0px
+                state_display: |
+                  [[[
+                    let raw = parseFloat(entity.state);
+                    let color = '#FBC02D';
+                    let display = '';
+
+                    if (raw < 10 || raw < 0) {
+                      color = '#43A047';
+                    } else if (raw > 40) {
+                      color = '#E53935';
+                    }
+
+                    if (raw >= 100) {
+                      display = `<span style="font-size:20px;">$</span>${(raw / 100).toFixed(2)}<span style="font-size:28px;">/kWh</span>`;
+                    } else {
+                      display = `${raw.toFixed(1)}<span style="font-size:20px;"> c/kWh</span>`;
+                    }
+
+                    const updatedTime = new Date(entity.last_changed);
+                    const now = new Date();
+                    const diffMins = Math.floor((now - updatedTime) / 60000);
+                    let timeDisplay = 'just now';
+                    if (diffMins === 1) timeDisplay = '1 min ago';
+                    else if (diffMins > 1) timeDisplay = `${diffMins} mins ago`;
+
+                    return `
+                      <div style="display:flex; align-items:center; height:100%;">
+                        <div style="font-size:24px; font-weight:bold; color:#ffffff; writing-mode: vertical-rl; transform: rotate(180deg); margin-right:30px; margin-top:-6px;">Buy</div>
+                        <div>
+                          <div class="price-anim" style="font-size:36px; font-weight:bold; color:${color};">${display}</div>
+                          <div style="font-size:12px; color:#999999; margin-top:4px;">Updated: ${timeDisplay}</div>
+                        </div>
+                      </div>
+                    `;
+                  ]]]
+                extra_styles: |
+                  @keyframes pulse {
+                    0% { transform: scale(1); }
+                    50% { transform: scale(1.1); }
+                    100% { transform: scale(1); }
+                  }
+                  .price-anim {
+                    animation: pulse 0.6s ease;
+                    display: inline-block;
+                  }
+              - type: gauge
+                entity: sensor.total_house_power_kw
+                name: House
+                max: 45
+                tap_action:
+                  action: navigate
+                  navigation_path: /shelly-energy-devices
+                severity:
+                  green: 0
+                  yellow: 15
+                  red: 20
+              - type: gauge
+                entity: sensor.shelly_pro_3_em_grid_total_active_power_kw
+                name: Grid
+                needle: true
+                max: 35
+                severity:
+                  green: -45
+                  yellow: 0
+                  red: 20
+                tap_action:
+                  action: navigate
+                  navigation_path: /shelly-energy
+                min: -35
+              - type: custom:gauge-card-pro
+                entity: sensor.electricity_maps_grid_fossil_fuel_percentage
+                segments:
+                  - from: 0
+                    color: green
+                  - from: 25
+                    color: yellow
+                  - from: 50
+                    color: red
+                  - from: 100
+                    color: var(--red-color)
+                needle: true
+                gradient: true
+                titles:
+                  primary: Fossil Fuel
+                grid_options:
+                  columns: 3
+                  rows: auto
+                gradient_resolution: medium
+              - type: custom:gauge-card-pro
+                entity: sensor.net_carbon_impact_daily
+                min: -400
+                max: 400
+                needle: true
+                gradient: true
+                gradient_resolution: medium
+                segments:
+                  - from: -200
+                    color: '#00C853'
+                  - from: -50
+                    color: '#B2FF59'
+                  - from: 0
+                    color: '#BDBDBD'
+                  - from: 50
+                    color: '#FF6D00'
+                  - from: 200
+                    color: '#D50000'
+                titles:
+                  primary: Today's Carbon
+                tap_action:
+                  action: navigate
+                  navigation_path: /shelly-carbon-impact
+                entity2: sensor.net_carbon_impact_monthly
+                inner:
+                  mode: needle
+                  gradient: true
+                  gradient_resolution: medium
+                  min: -400
+                  max: 400
+                  segments:
+                    - from: -200
+                      color: '#00C853'
+                    - from: -50
+                      color: '#B2FF59'
+                    - from: 0
+                      color: '#BDBDBD'
+                    - from: 50
+                      color: '#FF6D00'
+                    - from: 200
+                      color: '#D50000'
+            columns: 2
+            grid_options:
+              rows: 2
+              columns: 12
+    visible:
+      - user: e221b7880c8340869f4eca9ac2d8d2da
+      - user: 4172e7a06e204641b1ecbbc573f17341
+      - user: 79e8087cfad94747b43b00aeccd2f866
+      - user: 6de6767e9b2040d4b981e6361de79843
+      - user: 9394cb4b053e4e95acdd335ca18aa932
+    dense_section_placement: true
+    cards: []
