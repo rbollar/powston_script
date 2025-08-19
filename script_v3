@@ -1,5 +1,5 @@
 # Priority Rules Decision
-# Powston Inverter Decision Script — V3 Revised Forecast Shaping + Planner + Kiosk
+# Powston Inverter Decision Script — V3.1 Revised Forecast Shaping + Planner + Kiosk
 # Comments: powston.com.au@bol.la
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -338,10 +338,11 @@ if time_period == 'Peak':
         action = decisions.reason('export', 'PM peak sell — profitable vs upcoming buys', priority=2,
                                   buy=base_buy, sell=base_sell, soc=base_soc, need=base_need)
         solar = 'maximize'
-#    else:
-#        action = decisions.reason('export100', 'PM peak import lock — trickle export', priority=2,
-#                                  buy=base_buy, sell=base_sell, soc=base_soc, need=base_need)
-#        solar = 'maximize'
+    else:
+        action = decisions.reason('export', 'PM peak import lock — trickle export', priority=2,
+                                  buy=base_buy, sell=base_sell, soc=base_soc, need=base_need)
+        solar = 'maximize'
+        feed_in_power_limitation = 100
 
 # “Sell now” if better than upcoming buys + margin, and price is decent
 has_disc_buy = bool(discounted_buy_forecast)
@@ -390,10 +391,10 @@ if (
                                   avail_kwh=round(available_discharge_kWh, 2))
 
 # Full battery + negative FiT → curtail (don’t export at a loss)
-if sell_price < 0.0 and combined_battery_soc >= full_battery:
+if sell_price < 0.0:
     action = decisions.reason('auto', 'curtail — full battery & negative FiT', priority=2,
                               buy=base_buy, sell=base_sell, soc=base_soc)
-    solar = 'curtail'
+    feed_in_power_limitation is not None 
 
 # Informational: missed sell opportunity (SoC too low)
 if (discounted_sell_forecast and sell_price >= max(discounted_sell_forecast) and sell_price >= min_sell_price):
