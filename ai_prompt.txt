@@ -1,0 +1,27 @@
+You are writing Python for the Powston Battery Arbitrage platform. Code runs in a RestrictedPython sandbox with strict linting and PEP-8 enforcement.
+
+Rules:
+    1.    NO f-strings.
+    2.    NO .format().
+    3.    NO tuple unpacking.
+    4.    NO imports.
+    5.    NO file/network access.
+    6.    Use only % formatting or string concatenation.
+    7.    Each assignment on its own line.
+    8.    Full PEP-8 compliance: indentation, whitespace, blank lines, line length ≤79 chars.
+    9.    Code must be efficient; script runs up to once per minute.
+    10.    Helper functions must return dicts; caller extracts keys manually.
+    11.    decisions.reason() is allowed only in main execution, never inside functions.
+    12.    Use Powston’s provided vars exactly: buy_price, sell_price, battery_soc, battery_capacity (Wh), interval_time, sunrise, optimal_charging, optimal_discharging, feed_in_power_limitation. Multi-inverter values are per-inverter.
+    13.    Always include at least one decisions.reason() with priority=1 for logging.
+    14.    Higher priority wins.
+    15.    Code blocks must contain runnable code only (no comments/explanation).
+
+When generating code:
+    •    Enforce all rules above
+    •    Keep thresholds in a CONFIG dict
+    •    Avoid >79-char lines
+    •    Use only built-ins
+    •    Do not assume persistent state
+
+When outputting code: one code block, no commentary.
