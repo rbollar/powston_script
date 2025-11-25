@@ -1,0 +1,1735 @@
+# Priority Rules Decision
+# Powston Dynamic Arbitrage — v8.4 (Critical Floor Fix)
+# Author: powston.com.au@bol.la
+# BUILD: 2024-11-25 | Overnight/morning floor calculation fix
+
+# ═══════════════════════════════════════════════════════════════
+# v8.4 CRITICAL FIX RELEASE
+# ═══════════════════════════════════════════════════════════════
+# Fixes major overnight/morning floor calculation bug.
+# 
+# v8.3 → v8.4 Changes:
+# 1. Fixed overnight recognition in compute_floor()
+#    - 2 AM now correctly calculates 2.8h reserve (not 12.8h)
+#    - Morning hours (5 AM-4 PM) now use correct reserve calculation
+#    - Enables overnight and morning export opportunities
+# 
+# THE BUG:
+# - Overnight (12 AM-5 AM) treated as "before peak"
+# - Calculated reserve from peak_start→sunrise (12.8h)
+# - Should calculate from current_time→sunrise (2-3h)
+# - Result: Floor at 84% instead of 30%
+# - Blocked ALL overnight and morning export opportunities
+# 
+# IMPACT:
+# - Lost ~$2/day in overnight + morning arbitrage
+# - Lost ~$730/year
+# - Explains why timeline showed 💰💰💰 but system didn't export
+# 
+# THE FIX:
+# - Recognize overnight (hour < sunrise) as post-peak
+# - Calculate correct hours_to_sunrise for each period
+# - Overnight: 2-3h reserve = 30% floor ✓
+# - Morning: Small reserve = ability to export ✓
+# - Peak/post-peak: Unchanged ✓
+# 
+# v8.3 Changes (recap):
+# 1. Enhanced timeline icons: 💵 🔋
+# 2. Better error messages
+# 
+# v8.2 Changes (recap):
+# 1. PRE_PEAK_MAX_BUY_PRICE ceiling
+# 
+# v8.1 Changes (recap):
+# 1. Best-N pattern template documentation
+# 
+# v8.0 Changes (recap):
+# 1. Time window helpers
+# 2. Floor component standardization
+# 3. Priority 50 battery full check
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+# STRATEGY OVERVIEW
+# ═══════════════════════════════════════════════════════════════
+# Advanced battery arbitrage strategy with:
+# - Weather-adaptive floor management (sunny/normal/rainy)
+# - Forecast-based optimal charge/discharge timing
+# - Best-N periods charging algorithm (v7.11)
+# - Peak stepping floor with Best-N export (v7.12)
+# - NEW v7.13: Two-tier spike handling ($1+ vs 35¢+)
+# - NEW v7.13: Emergency overnight charging protection
+# - Overnight drain to morning target SOC
+# - Dynamic sell thresholds based on available energy
+# - Daytime opportunistic selling (morning + midday arbitrage)
+# - Ultra-cheap opportunistic charging + sanity checks
+# - Configurable battery full thresholds
+# - Aggressive 100% by 3pm target (hold until peak)
+# - Floor safety buffer for reliable morning SOC
+# - Enhanced kiosk displays with Best-N context
+# 
+# v7.13 Changes:
+# - NEW: Two-tier spike handling (100¢ drain-all, 35¢ forecast-aware)
+# - NEW: Emergency overnight charging (Priority 68)
+# - NEW: End-of-peak urgency (last 2 periods export regardless)
+# - NEW: Peak trickle export at 100W (prevent import drift)
+# - NEW: Enhanced kiosk with 🌞⚡️ emojis, buy/sell verbs, Best-N context
+# - NEW: Combined SOC display (average both inverters)
+# - FIX: Smart charging ONLY during day (disabled overnight)
+# - FIX: Overnight window extends to pv_start (not just sunrise)
+# - FIX: Remove double PEAK_HOUSE_LOAD_MULTIPLIER application
+# - FIX: Shorten decision strings to avoid 255-char limit
+# - Static floor calculation (accurate, avoids snapshot volatility)
+# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+# STRATEGY CONFIGURATION
+# ═══════════════════════════════════════════════════════════════
+
+CONFIG = {
+    # ─────────────────────────────────────────────────────────
+    # System Configuration
+    # ─────────────────────────────────────────────────────────
+    "NUM_INVERTERS": 2,            # Number of inverters in system
+    "INVERTER_IDS": [43923, 43924],  # For combined SOC averaging
+    
+    # ─────────────────────────────────────────────────────────
+    # Battery Thresholds (%)
+    # ─────────────────────────────────────────────────────────
+    "BATTERY_FULL_SOC": 100.0,         # When battery is "full"
+    "BATTERY_CURTAILMENT_SOC": 98.0,   # Curtail solar at this SOC
+    "BATTERY_CHARGE_STOP_SOC": 99.0,   # Stop forced charging (let solar finish)
+    
+    # ─────────────────────────────────────────────────────────
+    # Time Windows (hours)
+    # ─────────────────────────────────────────────────────────
+    "PEAK_START": 16,              # Peak period starts (4pm)
+    "PEAK_END": 20,                # Peak period last hour (8pm = 8:00-8:59pm)
+    "CHARGE_COMPLETE_HOUR": 15,    # Must be at 100% by this hour (3pm)
+    
+    # ─────────────────────────────────────────────────────────
+    # Price Thresholds (c/kWh)
+    # ─────────────────────────────────────────────────────────
+    "MAX_AM_BUY_PRICE": 12.0,      # v7.14: Increased from 10.0 for unexpected low-GTI days
+    "PRE_PEAK_MAX_BUY_PRICE": 12.0,  # v8.2: Don't pay more than this for pre-peak charging
+    "BASE_MIN_SELL_PRICE": 5.0,    # Minimum acceptable sell price
+    "ALWAYS_SELL_PRICE": 35.0,     # Spike threshold (with forecast check)
+    "DRAIN_TO_ZERO_PRICE": 100.0,  # Always drain to zero ($1/kWh+)
+    "SPIKE_MARGIN": 10.0,          # Spike must beat overnight buy by this
+    "DESIRED_MARGIN": 5.0,         # Target profit margin above buy price
+    
+    # ─────────────────────────────────────────────────────────
+    # Ultra-Cheap Charging
+    # ─────────────────────────────────────────────────────────
+    "ULTRA_CHEAP_BUY_PRICE": 2.0,  # Always charge below this (c/kWh)
+    "OPPORTUNISTIC_DISCOUNT": 0.7,  # Charge if 30% cheaper than avg
+    
+    # ─────────────────────────────────────────────────────────
+    # Forecast & Uncertainty
+    # ─────────────────────────────────────────────────────────
+    "FUTURE_FORECAST_HOURS": 8,             # How far ahead to look
+    "BUY_UNCERTAINTY_DISCOUNT": 0.03,       # Increase buy prices for caution (3%)
+    "SELL_UNCERTAINTY_DISCOUNT": 0.07,      # Decrease sell prices for caution (7%)
+    
+    # ─────────────────────────────────────────────────────────
+    # Solar Classification (GTI W·h/m²)
+    # ─────────────────────────────────────────────────────────
+    "GTI_SUNNY_THRESHOLD": 6000.0,
+    "GTI_NORMAL_THRESHOLD": 3500.0,
+    
+    # ─────────────────────────────────────────────────────────
+    # PV Generation Timing (hours after sunrise, by weather)
+    # ─────────────────────────────────────────────────────────
+    "SUNNY_PV_OFFSET": 1.0,    # 1h after sunrise on sunny days
+    "NORMAL_PV_OFFSET": 2.0,   # 2h after sunrise on normal days
+    "RAINY_PV_OFFSET": 3.0,    # 3h after sunrise on rainy days
+    
+    # ─────────────────────────────────────────────────────────
+    # House Load (kWh per hour TOTAL SYSTEM)
+    # ─────────────────────────────────────────────────────────
+    "HOUSE_LOAD_KWH_PER_HOUR": 2.75,       # Total system baseline
+    "PEAK_HOUSE_LOAD_MULTIPLIER": 1.5,     # Peak usage 50% higher
+    
+    # ─────────────────────────────────────────────────────────
+    # Floor Calculation
+    # ─────────────────────────────────────────────────────────
+    "SUNNY_FLOOR_SOC": 7.5,        # Aggressive (solar will recharge tomorrow)
+    "NORMAL_FLOOR_SOC": 17.5,      # Balanced (moderate recharge expected)
+    "RAINY_FLOOR_SOC": 30.0,       # Conservative (may not recharge)
+    "FLOOR_SAFETY_BUFFER_PERIODS": 3.0,  # v7.14: Increased from 1.5 to prevent intra-period drift
+    
+    # ─────────────────────────────────────────────────────────
+    # Export Budgets (kWh per inverter, by weather)
+    # ─────────────────────────────────────────────────────────
+    "SUNNY_EXPORT_BUDGET": 20.0,
+    "NORMAL_EXPORT_BUDGET": 12.5,
+    "RAINY_EXPORT_BUDGET": 5.0,
+    
+    # ─────────────────────────────────────────────────────────
+    # Overnight Drain Strategy
+    # ─────────────────────────────────────────────────────────
+    "TARGET_MORNING_SOC_MIN": 10.0,
+    "TARGET_MORNING_SOC_MAX": 20.0,
+    "OVERNIGHT_THRESHOLD_FACTOR": 0.70,
+    
+    # ─────────────────────────────────────────────────────────
+    # Daytime Opportunistic Selling
+    # ─────────────────────────────────────────────────────────
+    "DAYTIME_OPPORTUNISTIC_SELL_PRICE": 5.0,
+    "DAYTIME_ARBITRAGE_MARGIN": 3.0,
+    "DAYTIME_SAFETY_MARGIN": 1.5,
+}
+
+
+# ═══════════════════════════════════════════════════════════════
+# BEST-N SELECTION PATTERN (v8.1)
+# ═══════════════════════════════════════════════════════════════
+# Standard algorithm used across multiple decision functions.
+# Template for manual inline use (POWSTON doesn't support function-to-function calls).
+#
+# USED IN:
+# - smart_charging() → Find N cheapest buy periods
+# - peak_export_best_n() → Find N best sell periods during peak
+# - overnight_opportunities() → Find N best sell periods overnight
+#
+# ALGORITHM:
+# 1. Collect candidate periods with (index, hour, price)
+# 2. Sort by price:
+#    - Ascending for BUY (cheapest first)
+#    - Descending for SELL (highest first)
+# 3. Take top N based on energy needs
+# 4. Check if current period (index 0) is in Best-N
+# 5. Calculate rank and threshold
+#
+# PATTERN STRUCTURE:
+# ```
+# # Step 1: Collect periods
+# periods = []
+# for i in range(len(forecast)):
+#     ph = (hour_val + i * 0.5) % 24
+#     if meets_window_criteria(ph):
+#         periods.append({"index": i, "hour": ph, "price": forecast[i]})
+#
+# # Step 2: Sort
+# sorted_periods = sorted(periods, key=lambda x: x["price"], reverse=is_sell)
+#
+# # Step 3: Take Best-N
+# n_needed = calculate_periods_needed(energy_required, max_power_per_period)
+# best_n = sorted_periods[:min(n_needed, len(sorted_periods))]
+#
+# # Step 4: Check current period
+# current_is_good = 0 in [p["index"] for p in best_n]
+#
+# # Step 5: Calculate rank
+# current_rank = None
+# for idx, p in enumerate(sorted_periods):
+#     if p["index"] == 0:
+#         current_rank = idx + 1
+#         break
+#
+# threshold = best_n[-1]["price"] if best_n else 0
+# ```
+#
+# WHY THIS PATTERN:
+# - Consistent ranking across all decision points
+# - Prevents "good enough" vs "best" confusion
+# - Makes debugging easier (same structure everywhere)
+# - Allows tuning N without changing algorithm
+# ═══════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════
+# HELPER FUNCTIONS
+# ═══════════════════════════════════════════════════════════════
+
+
+def period_hour(base_hour, period_offset):
+    """
+    Calculate hour for a future period, handling midnight wrap.
+    
+    Args:
+        base_hour: Starting hour (float, 0-23.99)
+        period_offset: Number of 30-min periods forward (int)
+    
+    Returns:
+        Hour of the target period (float, 0-23.99)
+    
+    Example:
+        period_hour(23.5, 2) → 0.5  (23:30 + 1h = 00:30)
+    """
+    return (base_hour + period_offset * 0.5) % 24
+
+
+def in_window(hour, start, end):
+    """
+    Check if hour is within [start, end) window, handling midnight wrap.
+    
+    Args:
+        hour: Current hour (float, 0-23.99)
+        start: Window start hour (float, 0-23.99)
+        end: Window end hour (float, 0-23.99)
+    
+    Returns:
+        True if hour is in window
+    
+    Examples:
+        in_window(18, 16, 21) → True   (peak period)
+        in_window(23, 21, 5) → True    (overnight, wraps midnight)
+        in_window(3, 21, 5) → True     (overnight, wraps midnight)
+        in_window(10, 21, 5) → False   (daytime, not in overnight)
+    """
+    if start < end:
+        # Normal case: window doesn't cross midnight
+        return start <= hour < end
+    else:
+        # Wrap case: window crosses midnight
+        return hour >= start or hour < end
+
+
+def hours_between(from_hour, to_hour):
+    """
+    Calculate hours from from_hour to to_hour, handling midnight wrap.
+    
+    Args:
+        from_hour: Starting hour (float, 0-23.99)
+        to_hour: Ending hour (float, 0-23.99)
+    
+    Returns:
+        Hours forward (always positive, float)
+    
+    Examples:
+        hours_between(16, 21) → 5.0      (4pm to 9pm)
+        hours_between(23, 5) → 6.0       (11pm to 5am next day)
+        hours_between(5, 5) → 0.0        (same time)
+    """
+    if from_hour <= to_hour:
+        return to_hour - from_hour
+    else:
+        return (24 - from_hour) + to_hour
+
+
+def periods_between(from_hour, to_hour):
+    """
+    Calculate number of 30-min periods between hours.
+    v8.0: Inline logic (POWSTON doesn't support function-to-function calls).
+    """
+    # Inline hours_between logic
+    if from_hour <= to_hour:
+        hrs = to_hour - from_hour
+    else:
+        hrs = (24 - from_hour) + to_hour
+    
+    return int(hrs * 2)
+
+
+def format_time(hour_float):
+    """Convert fractional hour to 12-hour format string (e.g., 7.5 → '7:30am')."""
+    h = int(hour_float)
+    m = int((hour_float - h) * 60)
+    period = "am" if h < 12 else "pm"
+    display_h = h if h <= 12 else h - 12
+    if display_h == 0:
+        display_h = 12
+    return "%d:%02d%s" % (display_h, m, period)
+
+
+def apply_discount(forecast, hours, discount_rate):
+    """Apply exponential discounting to price forecasts."""
+    if not forecast or hours <= 0:
+        return []
+    return [forecast[i] * ((1 + discount_rate) ** i) for i in range(min(hours, len(forecast)))]
+
+
+def classify_solar(gti, cfg):
+    """Classify solar forecast as sunny, normal, or rainy."""
+    if gti >= cfg["GTI_SUNNY_THRESHOLD"]:
+        return "sunny"
+    elif gti >= cfg["GTI_NORMAL_THRESHOLD"]:
+        return "normal"
+    return "rainy"
+
+
+def get_combined_soc(battery_soc_input, inverters_dict, inverter_ids_list):
+    """Calculate combined SOC from multiple inverters for display."""
+    socs = []
+    for inv_id in inverter_ids_list:
+        inv_key = 'inverter_params_' + str(inv_id)
+        if inv_key in inverters_dict:
+            inv_data = inverters_dict[inv_key]
+            if 'battery_soc' in inv_data:
+                soc_val = inv_data['battery_soc']
+                if isinstance(soc_val, (int, float)):
+                    socs.append(float(soc_val))
+    
+    if len(socs) > 0:
+        return sum(socs) / len(socs)
+    else:
+        return float(battery_soc_input) if isinstance(battery_soc_input, (int, float)) else 0.0
+
+
+def compute_evening_premium(buy_fc, sell_fc, hour_val, cfg):
+    """
+    Calculate evening premium: peak sell prices vs all future buy prices.
+    v8.0: Inline time logic (POWSTON doesn't support function-to-function calls).
+    """
+    peak_start = float(cfg["PEAK_START"])
+    peak_end_actual = float(cfg["PEAK_END"]) + 1.0
+    
+    future_buys = []
+    peak_sells = []
+    
+    for i in range(min(len(buy_fc), len(sell_fc))):
+        # Inline period_hour: (hour_val + i * 0.5) % 24
+        ph = (hour_val + i * 0.5) % 24
+        
+        # Inline in_window logic
+        if peak_start < peak_end_actual:
+            is_peak = peak_start <= ph < peak_end_actual
+        else:
+            is_peak = ph >= peak_start or ph < peak_end_actual
+        
+        if is_peak:
+            peak_sells.append(sell_fc[i])
+        else:
+            future_buys.append(buy_fc[i])
+    
+    return max(peak_sells) - min(future_buys) if future_buys and peak_sells else 0.0
+
+
+def compute_peak_working_floor(hour_val, solar_class, sunrise_val, battery_wh, cfg):
+    """
+    v7.13: Calculate working floor during peak with STATIC house load buffer.
+    v8.0: Inline time logic (POWSTON doesn't support function-to-function calls).
+    
+    Recalculates every period - any deviation from predicted usage shows up
+    as more/less exportable energy naturally.
+    """
+    # ═══════════════════════════════════════════════════════════
+    # FLOOR COMPONENT: Battery Capacity
+    # ═══════════════════════════════════════════════════════════
+    battery_kwh = battery_wh / 1000.0
+    peak_end_actual_val = float(cfg["PEAK_END"] + 1)
+    
+    # ═══════════════════════════════════════════════════════════
+    # FLOOR COMPONENT: Base Floor Selection
+    # ═══════════════════════════════════════════════════════════
+    if solar_class == "sunny":
+        base_floor = cfg["SUNNY_FLOOR_SOC"]
+    elif solar_class == "rainy":
+        base_floor = cfg["RAINY_FLOOR_SOC"]
+    else:
+        base_floor = cfg["NORMAL_FLOOR_SOC"]
+    
+    # ═══════════════════════════════════════════════════════════
+    # FLOOR COMPONENT: Overnight Reserve Calculation
+    # ═══════════════════════════════════════════════════════════
+    # Hours from 9pm to sunrise
+    if peak_end_actual_val <= sunrise_val:
+        hours_to_sunrise = sunrise_val - peak_end_actual_val
+    else:
+        hours_to_sunrise = (24 - peak_end_actual_val) + sunrise_val
+    
+    overnight_kwh = hours_to_sunrise * cfg["HOUSE_LOAD_KWH_PER_HOUR"]
+    overnight_reserve_soc = (overnight_kwh / battery_kwh) * 100.0
+    
+    # ═══════════════════════════════════════════════════════════
+    # FLOOR COMPONENT: Safety Buffer Calculation
+    # ═══════════════════════════════════════════════════════════
+    safety_kwh = cfg["FLOOR_SAFETY_BUFFER_PERIODS"] * 0.5 * cfg["HOUSE_LOAD_KWH_PER_HOUR"]
+    safety_buffer_soc = (safety_kwh / battery_kwh) * 100.0
+    
+    # ═══════════════════════════════════════════════════════════
+    # FLOOR COMPONENT: Floor Composition
+    # ═══════════════════════════════════════════════════════════
+    floor_at_9pm = base_floor + overnight_reserve_soc + safety_buffer_soc
+    
+    # ═══════════════════════════════════════════════════════════
+    # PEAK-SPECIFIC: Stepping Buffer (decreases as we approach 9pm)
+    # ═══════════════════════════════════════════════════════════
+    if hour_val <= peak_end_actual_val:
+        hrs_to_9pm = peak_end_actual_val - hour_val
+    else:
+        hrs_to_9pm = (24 - hour_val) + peak_end_actual_val
+    periods_until_9pm = max(0, int(hrs_to_9pm * 2))
+    
+    if periods_until_9pm > 0:
+        house_per_period_kwh = (
+            cfg["HOUSE_LOAD_KWH_PER_HOUR"]  # 2.75 kWh/h TOTAL system
+            * 0.5  # period duration
+            * cfg["PEAK_HOUSE_LOAD_MULTIPLIER"]  # 1.5×
+        )
+        peak_buffer_kwh = house_per_period_kwh * periods_until_9pm
+        peak_buffer_soc = (peak_buffer_kwh / battery_kwh) * 100.0
+    else:
+        peak_buffer_soc = 0.0
+    
+    working_floor = floor_at_9pm + peak_buffer_soc
+    
+    return {
+        "working_floor": max(0.0, min(100.0, working_floor)),
+        "floor_at_9pm": floor_at_9pm,
+        "peak_buffer_soc": peak_buffer_soc,
+        "periods_until_9pm": periods_until_9pm,
+        "overnight_reserve_soc": overnight_reserve_soc,
+        "overnight_hours": hours_to_sunrise,
+        "safety_buffer_soc": safety_buffer_soc,
+    }
+
+
+def peak_export_best_n(soc, sell_fc, sell_now, hour_val, working_floor, battery_wh, max_discharge_kwh, cfg):
+    """
+    v7.13: Peak export using Best-N strategy with end-of-peak urgency.
+    
+    NEW: Last 2 periods of peak, export whatever's available regardless of ranking.
+    """
+    peak_end_actual_val = float(cfg["PEAK_END"] + 1)
+    battery_kwh = battery_wh / 1000.0
+    exportable_kwh = max(0.0, ((soc - working_floor) / 100.0) * battery_kwh)
+    
+    if exportable_kwh <= 0:
+        return {
+            "should_export": False,
+            "priority": 60,
+            "reason": "At floor %.1f%%" % working_floor,
+            "exportable_kwh": 0,
+        }
+    
+    periods_needed = max(1, int(exportable_kwh / max_discharge_kwh + 0.999))
+    periods_available = max(0, int((peak_end_actual_val - hour_val) * 2))
+    
+    if periods_available <= 0:
+        return {"should_export": False, "priority": 60, "reason": "Past peak"}
+    
+    # NEW v7.13: End-of-peak urgency
+    if periods_available <= 2 and exportable_kwh > 0:
+        return {
+            "should_export": True,
+            "priority": 60,
+            "reason": "End-peak urgent (%.1fkWh, %dp left)" % (exportable_kwh, periods_available),
+            "exportable_kwh": exportable_kwh,
+        }
+    
+    # Best-N ranking
+    peak_prices = sell_fc[:periods_available]
+    if not peak_prices:
+        return {"should_export": False, "priority": 60, "reason": "No forecast"}
+    
+    sorted_prices = sorted(peak_prices, reverse=True)
+    best_n_threshold = sorted_prices[min(periods_needed - 1, len(sorted_prices) - 1)]
+    
+    if sell_now >= best_n_threshold:
+        rank = sum(1 for p in sorted_prices if p > sell_now) + 1
+        return {
+            "should_export": True,
+            "priority": 60,
+            "reason": "Peak Best-N @ %.2fc (rank %d/%d)" % (
+                sell_now, rank, periods_available
+            ),
+            "exportable_kwh": exportable_kwh,
+            "rank": rank,
+            "periods_available": periods_available,
+        }
+    
+    # Not in best-N - find when to export for kiosk
+    best_period_idx = peak_prices.index(max(peak_prices))
+    best_hour = hour_val + (best_period_idx * 0.5)
+    
+    return {
+        "should_export": False,
+        "priority": 60,
+        "reason": "Hold for better (%.2fc < %.2fc)" % (sell_now, best_n_threshold),
+        "exportable_kwh": exportable_kwh,
+        "best_n_threshold": best_n_threshold,
+        "next_export_hour": best_hour,
+        "next_export_price": max(peak_prices),
+        "next_export_rank": 1,
+    }
+
+
+def compute_floor(solar_class, evening_premium, soc, hour_val, sunrise_val, battery_wh, cfg):
+    """
+    Compute dynamic SOC floor for POST-PEAK period (after 9pm).
+    v8.0: Inline time logic (POWSTON doesn't support function-to-function calls).
+    """
+    # ═══════════════════════════════════════════════════════════
+    # FLOOR COMPONENT: Battery Capacity
+    # ═══════════════════════════════════════════════════════════
+    battery_kwh = battery_wh / 1000.0
+    
+    # ═══════════════════════════════════════════════════════════
+    # FLOOR COMPONENT: Base Floor Selection
+    # ═══════════════════════════════════════════════════════════
+    if solar_class == "sunny":
+        base_floor = cfg["SUNNY_FLOOR_SOC"]
+        base_budget = cfg["SUNNY_EXPORT_BUDGET"]
+    elif solar_class == "rainy":
+        base_floor = cfg["RAINY_FLOOR_SOC"]
+        base_budget = cfg["RAINY_EXPORT_BUDGET"]
+    else:
+        base_floor = cfg["NORMAL_FLOOR_SOC"]
+        base_budget = cfg["NORMAL_EXPORT_BUDGET"]
+
+    peak_start_val = float(cfg["PEAK_START"])
+    
+    # ═══════════════════════════════════════════════════════════
+    # FLOOR COMPONENT: Overnight Reserve Calculation
+    # ═══════════════════════════════════════════════════════════
+    # v8.4 FIX: Recognize overnight (after midnight, before sunrise) as post-peak
+    # This prevents using peak_start→sunrise (12.8h) when we should use current→sunrise (2-3h)
+    
+    # Check if we're in overnight period (after midnight, before sunrise)
+    is_overnight = hour_val < sunrise_val
+    
+    if is_overnight:
+        # OVERNIGHT (12 AM - sunrise): Calculate from current time to sunrise
+        # At 2 AM with 4:48 sunrise: 2.8h reserve, not 12.8h!
+        hours_to_sunrise = sunrise_val - hour_val
+    elif hour_val < peak_start_val:
+        # TRUE PRE-PEAK (sunrise - 4 PM): Use peak start to sunrise
+        # This is daytime before peak, solar is generating
+        if peak_start_val <= sunrise_val:
+            hours_to_sunrise = sunrise_val - peak_start_val
+        else:
+            hours_to_sunrise = (24 - peak_start_val) + sunrise_val
+    else:
+        # POST-PEAK (4 PM - midnight): Use current time to sunrise with wrap
+        if hour_val <= sunrise_val:
+            hours_to_sunrise = sunrise_val - hour_val
+        else:
+            hours_to_sunrise = (24 - hour_val) + sunrise_val
+    
+    overnight_kwh = hours_to_sunrise * cfg["HOUSE_LOAD_KWH_PER_HOUR"]
+    overnight_reserve_soc = (overnight_kwh / battery_kwh) * 100.0
+    
+    # ═══════════════════════════════════════════════════════════
+    # FLOOR COMPONENT: Safety Buffer Calculation
+    # ═══════════════════════════════════════════════════════════
+    safety_kwh = cfg["FLOOR_SAFETY_BUFFER_PERIODS"] * 0.5 * cfg["HOUSE_LOAD_KWH_PER_HOUR"]
+    safety_buffer_soc = (safety_kwh / battery_kwh) * 100.0
+
+    # ═══════════════════════════════════════════════════════════
+    # FLOOR COMPONENT: Floor Composition
+    # ═══════════════════════════════════════════════════════════
+    # v8.4: Overnight uses post-peak logic (not pre-peak)
+    if is_overnight or hour_val >= peak_start_val:
+        # OVERNIGHT or POST-PEAK: Same import and export floors
+        import_floor = base_floor + overnight_reserve_soc + safety_buffer_soc
+        export_floor = base_floor + overnight_reserve_soc + safety_buffer_soc
+    else:
+        # TRUE PRE-PEAK (daytime before peak): Full import floor, calculated export floor
+        import_floor = cfg["BATTERY_FULL_SOC"]
+        export_floor = base_floor + overnight_reserve_soc + safety_buffer_soc
+
+    # ═══════════════════════════════════════════════════════════
+    # POST-PEAK SPECIFIC: Arbitrage Budget
+    # ═══════════════════════════════════════════════════════════
+    low = cfg["DESIRED_MARGIN"]
+    high = 2 * cfg["DESIRED_MARGIN"]
+
+    if evening_premium <= low:
+        budget_factor = 0.0
+    elif evening_premium <= high:
+        budget_factor = 0.5
+    else:
+        budget_factor = 1.0
+
+    budget = base_budget * budget_factor
+    available_kwh = max(0.0, (soc - export_floor) / 100.0 * battery_kwh)
+    budget = min(budget, available_kwh)
+
+    return {
+        "import_floor": max(0.0, import_floor),
+        "export_floor": max(0.0, export_floor),
+        "budget": budget,
+        "overnight_reserve_soc": overnight_reserve_soc,
+        "overnight_hours": hours_to_sunrise,
+        "safety_buffer_soc": safety_buffer_soc,
+    }
+
+
+def smart_charging(soc, export_floor, buy_fc, sell_fc, buy_now, hour_val, battery_wh, max_charge_kwh, sunrise_hour_val, cfg):
+    """
+    v7.13: Smart charging ONLY during DAY period (sunrise → peak).
+    v7.14: Added pre-dawn hard block (sunrise - 2h) to prevent early-AM triggers.
+    
+    FIXED: No longer runs overnight - prevents midnight imports.
+    """
+    peak_start_val = float(cfg["PEAK_START"])
+    
+    # v7.14 Change C: Block charging more than 2h before sunrise
+    # This prevents 1-3am Best-N triggers regardless of price ranking
+    pre_dawn_cutoff = sunrise_hour_val - 2.0
+    
+    # Handle midnight wrap-around
+    if hour_val > 12 and pre_dawn_cutoff < 0:
+        pre_dawn_cutoff = pre_dawn_cutoff + 24
+    
+    # Block if we're in the pre-dawn window (more than 2h before sunrise)
+    if hour_val < 12:  # Early morning hours
+        if hour_val < pre_dawn_cutoff:
+            return {"should_charge": False, "priority": 50, "reason": "Pre-dawn block"}
+    else:  # Evening/night hours
+        if pre_dawn_cutoff > 12 and hour_val < pre_dawn_cutoff:
+            return {"should_charge": False, "priority": 50, "reason": "Pre-dawn block"}
+    
+    # CRITICAL: Only run during daytime, not overnight
+    if hour_val >= peak_start_val:
+        return {"should_charge": False, "priority": 50, "reason": "auto (past charge window)"}
+    if not buy_fc:
+        return {"should_charge": False, "priority": 50, "reason": "auto (no forecast)"}
+
+    battery_kwh = battery_wh / 1000.0
+    target_soc = cfg["BATTERY_FULL_SOC"]
+    
+    # v8.0: Don't charge if already at/above target
+    # This allows curtailment (Priority 42) to run during negative FiT
+    if soc >= target_soc:
+        return {"should_charge": False, "priority": 50, "reason": "Battery full"}
+    
+    energy_needed = ((target_soc - soc) / 100.0) * battery_kwh
+    periods_needed = max(1, int(energy_needed / max_charge_kwh + 0.999))
+    
+    deadline = float(cfg["CHARGE_COMPLETE_HOUR"])
+    periods_available = int((deadline - hour_val) * 2)
+    
+    if periods_available <= 0:
+        return {"should_charge": False, "priority": 50, "reason": "Past deadline"}
+    
+    buffer = periods_available - periods_needed
+    
+    max_am_buy = float(cfg["MAX_AM_BUY_PRICE"])
+    
+    # Floor protection
+    if soc < export_floor and buy_now > max_am_buy:
+        peak_idx = int((peak_start_val - hour_val) * 2)
+        peak_end_actual_val = float(cfg["PEAK_END"] + 1)
+        peak_sells = (
+            sell_fc[peak_idx:peak_idx + int((peak_end_actual_val - peak_start_val) * 2)]
+            if peak_idx < len(sell_fc)
+            else []
+        )
+        avg_peak_sell = sum(peak_sells) / len(peak_sells) if peak_sells else 0
+        
+        energy_to_floor = max(0.0, ((export_floor - soc) / 100.0) * battery_kwh)
+        cost = energy_to_floor * (buy_now / 100.0)
+        revenue = min(energy_to_floor, 20.0) * (avg_peak_sell / 100.0)
+        
+        future_buys = buy_fc[:periods_available]
+        min_buy = min(future_buys) if future_buys else 9999
+        
+        if buy_now < min_buy:
+            return {
+                "should_charge": True,
+                "priority": 45,
+                "reason": "Floor cheapest @ %.2fc" % buy_now,
+            }
+        elif revenue > cost:
+            return {
+                "should_charge": True,
+                "priority": 45,
+                "reason": "Floor profitable",
+            }
+        elif periods_needed >= periods_available:
+            return {
+                "should_charge": True,
+                "priority": 48,
+                "reason": "Floor urgent",
+            }
+    
+    # Urgent mode
+    if buffer <= 0:
+        if buy_now <= max_am_buy:
+            return {
+                "should_charge": True,
+                "priority": 50,
+                "reason": "Urgent @ %.2fc" % buy_now,
+            }
+        else:
+            return {
+                "should_charge": False,
+                "priority": 50,
+                "reason": "Urgent but too expensive",
+            }
+    
+    # Best-N selection
+    future_prices = buy_fc[:periods_available]
+    if not future_prices:
+        return {"should_charge": False, "priority": 50, "reason": "No forecast"}
+    
+    sorted_prices = sorted(future_prices)
+    best_n_threshold = sorted_prices[min(periods_needed - 1, len(sorted_prices) - 1)]
+    
+    # v8.2: Reject if price exceeds pre-peak ceiling (even if Best-N)
+    # Prevents 16.5¢ imports when almost full
+    pre_peak_max = float(cfg["PRE_PEAK_MAX_BUY_PRICE"])
+    if buy_now > pre_peak_max:
+        return {
+            "should_charge": False,
+            "priority": 50,
+            "reason": "Too expensive @ %.2fc (max %.2fc)" % (buy_now, pre_peak_max),
+        }
+    
+    if buy_now <= best_n_threshold:
+        rank = sum(1 for p in sorted_prices if p < buy_now) + 1
+        return {
+            "should_charge": True,
+            "priority": 50,
+            "reason": "Best-N @ %.2fc (rank %d/%d)" % (buy_now, rank, periods_available),
+        }
+    
+    return {
+        "should_charge": False,
+        "priority": 50,
+        "reason": "Wait for better (threshold %.2fc)" % best_n_threshold,
+    }
+
+
+def overnight_opportunities(sell_fc, hour_val, sunrise_val, soc, battery_wh, max_discharge_kwh, cfg):
+    """
+    Analyze overnight sell opportunities (from PEAK_END to sunrise).
+    v8.0: Inline time logic (POWSTON doesn't support function-to-function calls).
+    """
+    if not sell_fc:
+        return None
+
+    target = (cfg["TARGET_MORNING_SOC_MIN"] + cfg["TARGET_MORNING_SOC_MAX"]) / 2.0
+    drain_kwh = max(0.0, ((soc - target) / 100.0) * (battery_wh / 1000.0))
+
+    peak_end_actual_val = float(cfg["PEAK_END"] + 1)
+    
+    periods = []
+    for i in range(len(sell_fc)):
+        # v8.0: Inline period_hour logic
+        ph = (hour_val + i * 0.5) % 24
+        
+        # v8.0: Inline in_window logic
+        if peak_end_actual_val < sunrise_val:
+            is_overnight = peak_end_actual_val <= ph < sunrise_val
+        else:
+            is_overnight = ph >= peak_end_actual_val or ph < sunrise_val
+
+        if is_overnight:
+            periods.append({"index": i, "hour": ph, "price": sell_fc[i]})
+
+    if not periods:
+        return None
+
+    periods = sorted(periods, key=lambda x: x["price"], reverse=True)
+    needed = max(1, int(drain_kwh / max_discharge_kwh + 0.999))
+    best = periods[:min(needed, len(periods))]
+
+    current_rank = None
+    for idx in range(len(periods)):
+        if periods[idx]["index"] == 0:
+            current_rank = idx + 1
+            break
+
+    return {
+        "has_opportunities": True,
+        "best_periods": best,
+        "current_is_good": 0 in [p["index"] for p in best],
+        "current_rank": current_rank,
+        "total_periods": len(periods),
+        "periods_needed": needed,
+        "worst_acceptable_price": best[-1]["price"] if best else 0,
+    }
+
+
+def next_best(forecast, hour_val, end_val):
+    """Find next best opportunity in forecast with formatted time."""
+    if not forecast:
+        return None
+    periods = [
+        {"index": i, "hour": hour_val + i * 0.5, "price": forecast[i]}
+        for i in range(1, len(forecast))
+        if hour_val + i * 0.5 < end_val
+    ]
+    if not periods:
+        return None
+    periods = sorted(periods, key=lambda x: x["price"])
+    
+    # Inline time formatting to avoid function dependency
+    best_hour = periods[0]["hour"]
+    h = int(best_hour)
+    m = int((best_hour - h) * 60)
+    period = "am" if h < 12 else "pm"
+    display_h = h if h <= 12 else h - 12
+    if display_h == 0:
+        display_h = 12
+    hour_formatted = "%d:%02d%s" % (display_h, m, period)
+    
+    return {
+        "hour": periods[0]["hour"],
+        "hour_formatted": hour_formatted,
+        "price": round(periods[0]["price"], 2),
+        "periods_away": periods[0]["index"],
+    }
+
+
+def build_forecast_timeline(buy_fc, sell_fc, hour_val, sc_info, peak_info, cfg):
+    """
+    v7.14: Build compact forecast timeline showing next 8 periods.
+    v8.0: Inline time logic (POWSTON doesn't support function-to-function calls).
+    v8.3: Add 🔋 ultra-cheap and 💵 negative buy icons.
+    Returns string like: "Next 4h: 💵🔋⚡⚡○○💰💰"
+    """
+    if not buy_fc or not sell_fc:
+        return ""
+    
+    icons = []
+    max_periods = min(8, len(buy_fc), len(sell_fc))
+    peak_start = float(cfg["PEAK_START"])
+    peak_end = float(cfg["PEAK_END"]) + 1.0
+    ultra_cheap = float(cfg["ULTRA_CHEAP_BUY_PRICE"])
+    
+    for i in range(max_periods):
+        # v8.0: Inline period_hour logic
+        ph = (hour_val + i * 0.5) % 24
+        buy_price = buy_fc[i]
+        sell_price = sell_fc[i]
+        
+        # v8.0: Inline in_window logic for peak check
+        if peak_start < peak_end:
+            is_peak = peak_start <= ph < peak_end
+        else:
+            is_peak = ph >= peak_start or ph < peak_end
+        
+        # Peak period logic
+        if is_peak:
+            # Check if in Best-N sell periods
+            best_n_thr = peak_info.get("best_n_threshold", 999) if peak_info else 999
+            if sell_price >= best_n_thr:
+                icon = "💰"
+            else:
+                icon = "○"
+        # v8.3: Check for negative buy price (rare but valuable)
+        elif buy_price < 0:
+            icon = "💵"
+        # v8.3: Check for ultra-cheap buy
+        elif buy_price <= ultra_cheap:
+            icon = "🔋"
+        # Day period - check for charging
+        elif sc_info and sc_info.get("should_charge"):
+            # Simple heuristic: if price is below current, it's a buy candidate
+            if buy_price <= buy_fc[0]:
+                icon = "⚡"
+            else:
+                icon = "○"
+        # Check for sell opportunities
+        elif sell_price >= float(cfg["BASE_MIN_SELL_PRICE"]):
+            icon = "💰"
+        # Negative FiT
+        elif sell_price < 0:
+            icon = "🚫"
+        else:
+            icon = "○"
+        
+        icons.append(icon)
+    
+    timeline = "".join(icons)
+    hours_covered = max_periods * 0.5
+    
+    return "Next %.0fh: %s" % (hours_covered, timeline)
+
+
+def build_kiosk_info(
+    time_period,
+    pv_kwh,
+    load_kwh,
+    surplus_deficit,
+    hour_val,
+    sunrise_hour_val,
+    battery_soc,
+    floor_soc,
+    battery_kwh,
+    sell_price_val,
+    next_charge_info,
+    next_discharge_info,
+    opp_analysis,
+    house_load_per_hour,
+    num_inverters,
+    floor_info,
+    peak_export_info,
+    forecast_timeline
+):
+    """
+    v7.13: Enhanced kiosk with 🌞⚡️ emojis, buy/sell verbs, and Best-N context.
+    v7.14: Added forecast timeline and improved contrast.
+    """
+    try:
+        pv_kwh = float(pv_kwh) if pv_kwh is not None else 0.0
+        load_kwh = float(load_kwh) if load_kwh is not None else 0.0
+        surplus_deficit = float(surplus_deficit) if surplus_deficit is not None else 0.0
+        battery_soc = float(battery_soc) if battery_soc is not None else 0.0
+        floor_soc = float(floor_soc) if floor_soc is not None else 0.0
+        battery_kwh = float(battery_kwh) if battery_kwh is not None and battery_kwh > 0 else 50.0
+        sell_price_val = float(sell_price_val) if sell_price_val is not None else 0.0
+        
+        if time_period == "Day":
+            # v7.14: Better contrast symbols, timeline, restored next charge info
+            base = "🌞%dkWh ⚡️%dkWh" % (int(pv_kwh), int(load_kwh))
+            
+            # Better contrast for surplus/deficit
+            if surplus_deficit >= 0:
+                base = base + " ↑%dkWh" % int(surplus_deficit)
+            else:
+                base = base + " ↓%dkWh" % int(abs(surplus_deficit))
+            
+            # Add timeline
+            if forecast_timeline:
+                base = base + " | " + forecast_timeline
+            
+            # Show next charge opportunity (restored from v7.12)
+            if next_charge_info and next_charge_info.get("hour_formatted"):
+                base = base + " | ⚡%s@%.1fc" % (
+                    next_charge_info["hour_formatted"], next_charge_info["price"]
+                )
+            elif surplus_deficit < 0:
+                base = base + " | No cheap buys"
+        
+        elif time_period == "Peak":
+            avail_kwh = ((battery_soc - floor_soc) / 100.0) * battery_kwh
+            soc_above_floor = battery_soc - floor_soc
+            
+            if avail_kwh > 0:
+                base = "🔋 %.0f%% (%.0f%% above floor) | %.1fkWh" % (
+                    battery_soc, soc_above_floor, avail_kwh
+                )
+            else:
+                if floor_info:
+                    overnight_kwh = floor_info.get("overnight_hours", 0) * house_load_per_hour * num_inverters
+                    base = "🔋 %.0f%% (AT FLOOR) | Protect %.1fkWh" % (battery_soc, overnight_kwh)
+                else:
+                    base = "🔋 %.0f%% (AT FLOOR)" % battery_soc
+            
+            # Add timeline
+            if forecast_timeline:
+                base = base + " | " + forecast_timeline
+            
+            # Best-N context
+            if peak_export_info:
+                if peak_export_info.get("should_export"):
+                    rank = peak_export_info.get("rank", 0)
+                    periods_avail = peak_export_info.get("periods_available", 0)
+                    base = base + " | 💰rank %d/%d @ %.1fc" % (rank, periods_avail, sell_price_val)
+                elif peak_export_info.get("next_export_hour"):
+                    # Inline time formatting
+                    best_hour = peak_export_info["next_export_hour"]
+                    h = int(best_hour)
+                    m = int((best_hour - h) * 60)
+                    period = "am" if h < 12 else "pm"
+                    display_h = h if h <= 12 else h - 12
+                    if display_h == 0:
+                        display_h = 12
+                    next_time = "%d:%02d%s" % (display_h, m, period)
+                    
+                    next_price = peak_export_info.get("next_export_price", 0)
+                    next_rank = peak_export_info.get("next_export_rank", 1)
+                    periods_avail = peak_export_info.get("periods_available", 0)
+                    base = base + " | 💰%s rank %d/%d @ %.1fc" % (
+                        next_time, next_rank, periods_avail, next_price
+                    )
+                else:
+                    base = base + " | Hold @ %.1fc" % sell_price_val
+            else:
+                base = base + " | Hold @ %.1fc" % sell_price_val
+        
+        elif time_period == "Night":
+            sunrise_hour_val = float(sunrise_hour_val) if sunrise_hour_val is not None else 6.0
+            hour_val = float(hour_val) if hour_val is not None else 0.0
+            # v8.0: Inline hours_between logic
+            if hour_val <= sunrise_hour_val:
+                hrs_to_sunrise = sunrise_hour_val - hour_val
+            else:
+                hrs_to_sunrise = (24 - hour_val) + sunrise_hour_val
+            
+            system_load_to_sunrise = hrs_to_sunrise * float(house_load_per_hour) * float(num_inverters)
+            
+            base = "🌙 Load→☀ %.1fkWh (%.1fh)" % (system_load_to_sunrise, hrs_to_sunrise)
+            
+            # Add timeline
+            if forecast_timeline:
+                base = base + " | " + forecast_timeline
+            
+            soc_above_floor = battery_soc - floor_soc
+            if soc_above_floor > 10:
+                base = base + " | %.0f%% (%.0f%% buf)" % (battery_soc, soc_above_floor)
+            elif soc_above_floor > 0:
+                base = base + " | %.0f%% (+%.0f%%)" % (battery_soc, soc_above_floor)
+            else:
+                base = base + " | %.0f%% (FLOOR)" % battery_soc
+            
+            # Next discharge opportunity
+            if opp_analysis and opp_analysis.get("current_is_good"):
+                base = base + " | 💰NOW @ %.1fc" % sell_price_val
+            elif next_discharge_info and next_discharge_info.get("hour_formatted"):
+                base = base + " | 💰%s@%.1fc" % (
+                    next_discharge_info["hour_formatted"], next_discharge_info["price"]
+                )
+        
+        # v7.14: Truncate to 250 chars to ensure HA parsing
+        if len(base) > 250:
+            base = base[:247] + "..."
+        
+        return base
+    
+    except Exception:
+        return "Status OK"
+
+
+def scalar_sanitise(x):
+    """Extract float from various formats."""
+    try:
+        return float(x)
+    except Exception:
+        try:
+            return float(x.get("value"))
+        except Exception:
+            return 0.0
+
+
+# ═══════════════════════════════════════════════════════════════
+# MAIN EXECUTION
+# ═══════════════════════════════════════════════════════════════
+
+# Sanitize feed inputs to avoid type errors
+try:
+    buy_price = float(buy_price)
+    sell_price = float(sell_price)
+    battery_soc = float(battery_soc)
+    battery_capacity = float(battery_capacity)
+    optimal_charging = float(optimal_charging)
+    optimal_discharging = float(optimal_discharging)
+    solar_power = float(solar_power)
+except (TypeError, ValueError):
+    buy_price = 0.0
+    sell_price = 0.0
+    battery_soc = 50.0
+    battery_capacity = 51200.0
+    optimal_charging = 10000.0
+    optimal_discharging = 10000.0
+    solar_power = 0.0
+
+feed_in_power_limitation = optimal_charging
+max_charge_kwh_per_period = (optimal_charging / 1000.0) * 0.5
+max_discharge_kwh_per_period = (optimal_discharging / 1000.0) * 0.5
+
+pv_kwh = mqtt_data.get("solar_estimate", {}).get("solar_estimate_remaining", 0.0)
+surplus = mqtt_data.get("solar_estimate", {}).get("solar_surplus_deficit", 0.0)
+load_kwh = max(0.0, pv_kwh - surplus)
+
+hour = float(interval_time.hour)
+
+# Parse sunrise
+try:
+    sunrise_hour = float(sunrise.hour) + float(sunrise.minute) / 60.0
+except (AttributeError, TypeError):
+    try:
+        sunrise_time = sunrise.split("T")[1].split("+")[0].split(".")[0]
+        sunrise_parts = sunrise_time.split(":")
+        sunrise_hour = float(sunrise_parts[0]) + float(sunrise_parts[1]) / 60.0
+    except (AttributeError, IndexError, ValueError):
+        sunrise_hour = 6.0
+
+peak_end_actual = float(CONFIG["PEAK_END"]) + 1.0
+peak_start_val = float(CONFIG["PEAK_START"])
+
+# v8.0: Use time helpers
+if in_window(hour, peak_start_val, peak_end_actual):
+    time_period = "Peak"
+elif in_window(hour, sunrise_hour, peak_start_val):
+    time_period = "Day"
+else:
+    time_period = "Night"
+
+# GTI forecast
+if hour >= sunrise_hour:
+    try:
+        hourly_gti = weather_data.get('hourly', {}).get('global_tilted_irradiance_instant', [])
+        if len(hourly_gti) >= 48:
+            gti = float(sum(hourly_gti[24:48]))
+            gti_src = "tomorrow_pure"
+        else:
+            gti = scalar_sanitise(gti_sum_tomorrow)
+            gti_src = "tomorrow_mixed"
+    except Exception:
+        gti = scalar_sanitise(gti_sum_tomorrow)
+        gti_src = "tomorrow_fallback"
+else:
+    gti = scalar_sanitise(gti_today)
+    gti_src = "today"
+
+solar_cls = classify_solar(gti, CONFIG)
+
+# Forecast discounting
+buy_disc = apply_discount(
+    buy_forecast,
+    CONFIG["FUTURE_FORECAST_HOURS"],
+    CONFIG["BUY_UNCERTAINTY_DISCOUNT"],
+)
+sell_disc = apply_discount(
+    sell_forecast,
+    CONFIG["FUTURE_FORECAST_HOURS"],
+    -float(CONFIG["SELL_UNCERTAINTY_DISCOUNT"]),
+)
+
+# Ensure forecast lists are properly typed
+buy_disc = [float(x) for x in buy_disc] if buy_disc else []
+sell_disc = [float(x) for x in sell_disc] if sell_disc else []
+
+# Peak working floor (static calculation)
+peak_floor = None
+# v8.0: Use time helper
+if in_window(hour, peak_start_val, peak_end_actual):
+    peak_floor = compute_peak_working_floor(
+        hour,
+        solar_cls,
+        sunrise_hour,
+        battery_capacity,
+        CONFIG,
+    )
+
+# Regular floor
+eve_prem = compute_evening_premium(buy_forecast, sell_forecast, hour, CONFIG)
+floor = compute_floor(
+    solar_cls,
+    eve_prem,
+    battery_soc,
+    hour,
+    sunrise_hour,
+    battery_capacity,
+    CONFIG,
+)
+
+# Smart charging
+sc = smart_charging(
+    battery_soc,
+    floor["export_floor"],
+    buy_disc,
+    sell_disc,
+    buy_price,
+    hour,
+    battery_capacity,
+    max_charge_kwh_per_period,
+    sunrise_hour,  # v7.14: Added for pre-dawn block
+    CONFIG,
+)
+
+# Peak export
+peak_export = None
+if peak_floor:
+    peak_export = peak_export_best_n(
+        battery_soc,
+        sell_disc,
+        sell_price,
+        hour,
+        peak_floor["working_floor"],
+        battery_capacity,
+        max_discharge_kwh_per_period,
+        CONFIG,
+    )
+
+# Active floor
+if peak_floor:
+    active_floor = peak_floor["working_floor"]
+else:
+    active_floor = floor["export_floor"]
+
+avail_soc = max(0.0, battery_soc - active_floor)
+
+# Dynamic sell threshold
+thr = 9999.0
+if sell_disc:
+    positive_sells = [s for s in sell_disc if s > 0]
+    if positive_sells and avail_soc > 0:
+        positive_sells = sorted(positive_sells, reverse=True)
+        avail_kwh = (avail_soc / 100.0) * (battery_capacity / 1000.0)
+        periods = max(1, int(avail_kwh / max_discharge_kwh_per_period + 0.999))
+        thr_sell = float(
+            min(positive_sells)
+            if periods >= len(positive_sells)
+            else positive_sells[periods - 1]
+        )
+        valid_buys = [float(b) for b in buy_disc if b > 0]
+        thr = max(
+            float(CONFIG["BASE_MIN_SELL_PRICE"]),
+            float(thr_sell),
+            (min(valid_buys) if valid_buys else 0.0) + float(CONFIG["DESIRED_MARGIN"]),
+        )
+
+# Overnight opportunities (v7.13: Fixed window calculation)
+if solar_cls == "rainy":
+    pv_offset = float(CONFIG["RAINY_PV_OFFSET"])
+elif solar_cls == "sunny":
+    pv_offset = float(CONFIG["SUNNY_PV_OFFSET"])
+else:
+    pv_offset = float(CONFIG["NORMAL_PV_OFFSET"])
+
+pv_start = float(sunrise_hour + pv_offset)
+
+# v8.0: Use time helper
+is_overnight_window = in_window(hour, peak_end_actual, pv_start)
+
+opp = (
+    overnight_opportunities(
+        sell_disc,
+        hour,
+        pv_start,  # Use pv_start instead of sunrise_hour
+        battery_soc,
+        battery_capacity,
+        max_discharge_kwh_per_period,
+        CONFIG,
+    )
+    if is_overnight_window
+    else None
+)
+
+# Next best periods
+battery_full_soc = float(CONFIG["BATTERY_FULL_SOC"])
+next_ch = (
+    next_best(buy_disc, hour, peak_start_val)
+    if hour < peak_start_val and battery_soc < battery_full_soc
+    else None
+)
+next_dis = None
+if opp:
+    for p in opp.get("best_periods", []):
+        if p["index"] > 0:
+            # Inline time formatting
+            best_hour = p["hour"]
+            h = int(best_hour)
+            m = int((best_hour - h) * 60)
+            period = "am" if h < 12 else "pm"
+            display_h = h if h <= 12 else h - 12
+            if display_h == 0:
+                display_h = 12
+            hour_formatted = "%d:%02d%s" % (display_h, m, period)
+            
+            next_dis = {
+                "hour": p["hour"],
+                "hour_formatted": hour_formatted,
+                "price": round(p["price"], 2),
+                "periods_away": p["index"],
+            }
+            break
+
+# NEW v7.13: Combined SOC for display
+try:
+    display_soc = get_combined_soc(battery_soc, runtime_params, CONFIG["INVERTER_IDS"])
+except Exception:
+    display_soc = battery_soc
+
+# v7.14: Build forecast timeline
+forecast_timeline = build_forecast_timeline(
+    buy_disc,
+    sell_disc,
+    hour,
+    sc,
+    peak_export,
+    CONFIG
+)
+
+# Build kiosk
+kiosk = build_kiosk_info(
+    time_period=time_period,
+    pv_kwh=pv_kwh,
+    load_kwh=load_kwh,
+    surplus_deficit=surplus,
+    hour_val=hour,
+    sunrise_hour_val=sunrise_hour,
+    battery_soc=display_soc,
+    floor_soc=active_floor,
+    battery_kwh=battery_capacity / 1000.0,
+    sell_price_val=sell_price,
+    next_charge_info=next_ch,
+    next_discharge_info=next_dis,
+    opp_analysis=opp,
+    house_load_per_hour=CONFIG["HOUSE_LOAD_KWH_PER_HOUR"],
+    num_inverters=CONFIG["NUM_INVERTERS"],
+    floor_info=peak_floor if time_period == "Peak" else floor,
+    peak_export_info=peak_export,
+    forecast_timeline=forecast_timeline
+)
+
+# ═══════════════════════════════════════════════════════════════
+# DECISION LOGIC
+# ═══════════════════════════════════════════════════════════════
+
+action = "auto"
+
+# Type-safe constants for decision logic
+DRAIN_TO_ZERO = float(CONFIG["DRAIN_TO_ZERO_PRICE"])
+ALWAYS_SELL = float(CONFIG["ALWAYS_SELL_PRICE"])
+SPIKE_MARGIN_VAL = float(CONFIG["SPIKE_MARGIN"])
+ULTRA_CHEAP = float(CONFIG["ULTRA_CHEAP_BUY_PRICE"])
+BATTERY_CURTAIL = float(CONFIG["BATTERY_CURTAILMENT_SOC"])
+BATTERY_STOP = float(CONFIG["BATTERY_CHARGE_STOP_SOC"])
+CHARGE_COMPLETE = float(CONFIG["CHARGE_COMPLETE_HOUR"])
+MAX_AM_BUY = float(CONFIG["MAX_AM_BUY_PRICE"])
+DAYTIME_OPP_SELL = float(CONFIG["DAYTIME_OPPORTUNISTIC_SELL_PRICE"])
+DAYTIME_ARB_MARGIN = float(CONFIG["DAYTIME_ARBITRAGE_MARGIN"])
+DAYTIME_SAFETY = float(CONFIG["DAYTIME_SAFETY_MARGIN"])
+TARGET_MORNING_MAX = float(CONFIG["TARGET_MORNING_SOC_MAX"])
+TARGET_MORNING_MIN = float(CONFIG["TARGET_MORNING_SOC_MIN"])
+BASE_MIN_SELL = float(CONFIG["BASE_MIN_SELL_PRICE"])
+OVERNIGHT_FACTOR = float(CONFIG["OVERNIGHT_THRESHOLD_FACTOR"])
+HOUSE_LOAD = float(CONFIG["HOUSE_LOAD_KWH_PER_HOUR"])
+
+# NEW v7.13: Set Powston short-circuit (only bypass at $1+)
+always_export_rrp = DRAIN_TO_ZERO * 10  # noqa: 100c → 1000 $/MWh
+
+# Priority 100 — Drain-to-Zero Spikes ($1+)
+if sell_price >= DRAIN_TO_ZERO:
+    action = decisions.reason(
+        "export",
+        "DRAIN ALL @ %.1fc" % sell_price,
+        priority=100,
+        sell=sell_price,
+        soc=battery_soc,
+    )
+
+# Priority 99 — Forecast-Aware Spikes (35¢-$1)
+elif sell_price >= ALWAYS_SELL and battery_soc > 5:
+    # Find minimum discounted overnight buy
+    if buy_disc:
+        overnight_buys = [buy_disc[i] for i in range(len(buy_disc)) 
+                          if (hour + i * 0.5) >= peak_end_actual]
+        min_overnight_buy = min(overnight_buys) if overnight_buys else 0
+    else:
+        min_overnight_buy = 0
+    
+    safe_spike_threshold = max(
+        min_overnight_buy + SPIKE_MARGIN_VAL,
+        ALWAYS_SELL
+    )
+    
+    if sell_price >= safe_spike_threshold:
+        # v8.0: Use time helper
+        if in_window(hour, peak_start_val, peak_end_actual):
+            # During peak: drain to 9pm floor
+            if peak_floor and battery_soc > peak_floor["floor_at_9pm"]:
+                action = decisions.reason(
+                    "export",
+                    "Spike %.1fc (to floor %.0f%%)" % (sell_price, peak_floor["floor_at_9pm"]),
+                    priority=99,
+                    sell=sell_price,
+                    soc=battery_soc,
+                )
+        else:
+            # Outside peak: drain aggressively
+            action = decisions.reason(
+                "export",
+                "Spike %.1fc >= %.0fc" % (sell_price, safe_spike_threshold),
+                priority=99,
+                sell=sell_price,
+                soc=battery_soc,
+            )
+
+# ============================================================================
+# Priority 92: Negative buy price + battery full → fullstop
+# ============================================================================
+# During negative buy prices with full battery, turn off solar and import
+# to house load. Grid pays us for consumption!
+if buy_price < 0 and battery_soc >= 99:
+    action = decisions.reason(
+        "fullstop",
+        "💵 Neg buy @ %.2fc, batt full→stop solar, grid pays house!" % buy_price,
+        priority=92,
+        buy=buy_price,
+        soc=battery_soc
+    )
+
+# Priority 90 — Negative Buy Price
+if buy_price < 0:
+    if not (peak_start_val <= hour < peak_end_actual):
+        if battery_soc >= BATTERY_CURTAIL:
+            feed_in_power_limitation = 10
+            action = decisions.reason(
+                "import",
+                "PAID %.2fc + curtail" % abs(buy_price),
+                priority=90,
+                buy=buy_price,
+                soc=battery_soc,
+            )
+        else:
+            action = decisions.reason(
+                "import",
+                "PAID %.2fc" % abs(buy_price),
+                priority=90,
+                buy=buy_price,
+                soc=battery_soc,
+            )
+
+# Priority 85 — Ultra-Cheap
+if buy_price <= ULTRA_CHEAP and battery_soc < BATTERY_STOP and hour < peak_start_val:
+    action = decisions.reason(
+        "import",
+        "Ultra-cheap %.2fc" % buy_price,
+        priority=85,
+        buy=buy_price,
+        soc=battery_soc,
+    )
+
+# Priority 82 — Pre-Peak Top-Up
+if CHARGE_COMPLETE <= hour < peak_start_val and battery_soc < battery_full_soc:
+    if buy_price <= MAX_AM_BUY * 1.5:
+        action = decisions.reason(
+            "import",
+            "Pre-peak @ %.2fc" % buy_price,
+            priority=82,
+            buy=buy_price,
+            soc=battery_soc,
+        )
+
+# Priority 75 — Daytime Opportunistic Sell
+# v8.0: Use time helper
+if in_window(hour, sunrise_hour, peak_start_val) and sell_price >= DAYTIME_OPP_SELL:
+    if solar_cls == "rainy":
+        pv_gen_offset = float(CONFIG["RAINY_PV_OFFSET"])
+    elif solar_cls == "sunny":
+        pv_gen_offset = float(CONFIG["SUNNY_PV_OFFSET"])
+    else:
+        pv_gen_offset = float(CONFIG["NORMAL_PV_OFFSET"])
+    
+    pv_generation_hour = sunrise_hour + pv_gen_offset
+    
+    periods_until_peak = int((peak_start_val - hour) * 2)
+    if buy_disc and periods_until_peak > 0:
+        min_future_buy = min(buy_disc[:periods_until_peak])
+        
+        price_opportunity = (
+            sell_price >= (buy_price - 2.0) or
+            sell_price >= (min_future_buy + DAYTIME_ARB_MARGIN)
+        )
+        
+        if price_opportunity:
+            if hour < pv_generation_hour:
+                hours_to_pv = pv_generation_hour - hour
+                energy_to_pv = hours_to_pv * HOUSE_LOAD
+                min_soc_for_pv = (energy_to_pv / (battery_capacity / 1000.0)) * 100.0
+                
+                if battery_soc > (min_soc_for_pv + 5):
+                    action = decisions.reason(
+                        "export",
+                        "Morning arb %.1fc, PV in %.1fh @ %.1f" % (
+                            sell_price, hours_to_pv, pv_generation_hour
+                        ),
+                        priority=75,
+                        sell=sell_price,
+                        soc=battery_soc,
+                    )
+            else:
+                if next_ch:
+                    hours_to_cheap_buy = next_ch["periods_away"] * 0.5
+                    energy_to_cheap_buy = hours_to_cheap_buy * HOUSE_LOAD * DAYTIME_SAFETY
+                    min_soc_needed = (energy_to_cheap_buy / (battery_capacity / 1000.0)) * 100.0
+                else:
+                    min_soc_needed = 20.0
+                
+                if battery_soc > (min_soc_needed + 15):
+                    action = decisions.reason(
+                        "export",
+                        "Day arb %.1fc" % sell_price,
+                        priority=75,
+                        sell=sell_price,
+                        soc=battery_soc,
+                    )
+
+# NEW v7.13 Priority 68 — Emergency Overnight Charging
+# v7.14 Change B: Only fires in last 3 hours before PV starts (true emergency)
+# v8.0: Use time helpers
+emergency_window_start = pv_start - 3.0
+if emergency_window_start < 0:
+    emergency_window_start = emergency_window_start + 24
+
+# Check if we're in the emergency window
+in_emergency_window = in_window(hour, emergency_window_start, pv_start)
+
+if in_emergency_window:
+    hours_to_pv = hours_between(hour, pv_start)
+    minimum_kwh = hours_to_pv * HOUSE_LOAD
+    minimum_soc = (minimum_kwh / (battery_capacity / 1000.0)) * 100.0
+    
+    if battery_soc < minimum_soc:
+        # Find cheapest morning buy
+        morning_buys = []
+        for i in range(len(buy_disc)):
+            if in_window(period_hour(hour, i), pv_start, peak_start_val):
+                morning_buys.append(buy_disc[i])
+        min_morning_buy = min(morning_buys) if morning_buys else 999
+        
+        if buy_price < min_morning_buy:
+            action = decisions.reason(
+                "import",
+                "Emergency %.0f%% @ %.2fc < morning %.2fc" % (
+                    minimum_soc, buy_price, min_morning_buy
+                ),
+                priority=68,
+                buy=buy_price,
+                soc=battery_soc,
+            )
+
+# Priority 65 — Overnight Drain
+if opp and opp["has_opportunities"] and battery_soc > TARGET_MORNING_MAX:
+    target = (TARGET_MORNING_MIN + TARGET_MORNING_MAX) / 2.0
+    
+    # Respect minimum safe level
+    if floor:
+        minimum_safe = floor["overnight_reserve_soc"] + floor["safety_buffer_soc"]
+        actual_target = max(target, minimum_safe)
+    else:
+        actual_target = target
+    
+    if battery_soc > actual_target:
+        # v8.0: Use time helper
+        hrs = hours_between(hour, pv_start)
+
+        should_sell = False
+        reason = ""
+
+        if opp["current_is_good"]:
+            should_sell = True
+            reason = "Best period (rank %d/%d)" % (opp["current_rank"], opp["total_periods"])
+        elif hrs <= 1.0:
+            should_sell = True
+            reason = "Urgent (%.1fh)" % hrs
+        elif hrs <= 2.0 and battery_soc > actual_target + 15:
+            should_sell = True
+            reason = "Critical"
+
+        if should_sell:
+            if hrs <= 0.5:
+                forecast_thr = 0.01
+            elif opp["current_is_good"]:
+                forecast_thr = max(0.01, opp["worst_acceptable_price"])
+            elif hrs <= 2.0:
+                forecast_thr = BASE_MIN_SELL * 0.5
+            else:
+                forecast_thr = BASE_MIN_SELL * 0.7
+
+            if sell_price >= forecast_thr and battery_soc > floor["export_floor"]:
+                action = decisions.reason(
+                    "export",
+                    "Drain to %.0f%% - %s @ %.2fc" % (actual_target, reason, sell_price),
+                    priority=65,
+                    sell=sell_price,
+                    soc=battery_soc,
+                )
+
+# Priority 60 — Peak Best-N / Post-Peak Arbitrage
+# v8.0: Use time helper
+if in_window(hour, peak_start_val, peak_end_actual):
+    # NEW v7.13: Peak trickle export when auto
+    if peak_export and peak_export["should_export"]:
+        action = decisions.reason(
+            "export",
+            peak_export["reason"],
+            priority=60,
+            sell=sell_price,
+            soc=battery_soc,
+        )
+    elif action == "auto":
+        # Trickle export to prevent import drift
+        feed_in_power_limitation = 100
+        action = decisions.reason(
+            "export",
+            "Peak trickle (prevent import)",
+            priority=60,
+            sell=sell_price,
+            soc=battery_soc,
+        )
+else:
+    # Post-peak arbitrage
+    if sell_price >= 0 and avail_soc > 0:
+        # v8.0: Use time helper
+        if in_window(hour, peak_end_actual, sunrise_hour):
+            adj_thr = thr * OVERNIGHT_FACTOR
+        else:
+            adj_thr = thr
+
+        if sell_price >= adj_thr:
+            action = decisions.reason(
+                "export",
+                "Arb sell %.2fc" % sell_price,
+                priority=60,
+                sell=sell_price,
+                soc=battery_soc,
+            )
+
+# Priority 45, 48, 50 — Smart Charging (DAY ONLY)
+# v8.0: Use time helper
+if sc["should_charge"] and in_window(hour, sunrise_hour, peak_start_val):
+    feed_in_power_limitation = optimal_charging
+    action = decisions.reason(
+        "import",
+        str(sc["reason"]),
+        priority=sc["priority"],
+        buy=buy_price,
+        soc=battery_soc,
+    )
+
+# Priority 41/42 — Negative FiT
+if sell_price < 0 and not sc["should_charge"]:
+    if battery_soc >= BATTERY_CURTAIL:
+        feed_in_power_limitation = 10
+        action = decisions.reason(
+            "auto_api_curtail",
+            "Neg FiT Curtail",
+            priority=42,
+            sell=sell_price,
+            soc=battery_soc,
+        )
+    else:
+        action = decisions.reason(
+            "auto",
+            "Neg FiT, batt charging",
+            priority=41,
+            sell=sell_price,
+            soc=battery_soc,
+        )
+
+# Priority 40 — Missed sell
+if sell_disc and avail_soc <= 0:
+    if sell_price >= max(sell_disc) and sell_price >= BASE_MIN_SELL:
+        action = decisions.reason(
+            "auto",
+            "Missed sell — at floor",
+            priority=40
+        )
+
+# Priority 1 — Context
+action = decisions.reason(
+    "auto",
+    time_period + " " + kiosk,
+    priority=1,
+    buy=round(buy_price, 3),
+    sell=round(sell_price, 3),
+    soc=round(display_soc, 1),
+    solar_class=solar_cls,
+    gti_for_floor=round(gti, 1),
+    gti_source=gti_src,
+    evening_premium=round(eve_prem, 2),
+    import_floor_soc=round(floor["import_floor"], 1),
+    export_floor_soc=round(floor["export_floor"], 1),
+    working_floor_soc=round(peak_floor["working_floor"], 1) if peak_floor else None,
+    floor_at_9pm_soc=round(peak_floor["floor_at_9pm"], 1) if peak_floor else None,
+    peak_buffer_soc=round(peak_floor["peak_buffer_soc"], 1) if peak_floor else None,
+    periods_until_9pm=peak_floor["periods_until_9pm"] if peak_floor else None,
+    overnight_reserve_soc=round(floor["overnight_reserve_soc"], 1),
+    safety_buffer_soc=round(floor["safety_buffer_soc"], 1),
+    overnight_hours=round(floor["overnight_hours"], 1),
+    export_budget_kwh=round(floor["budget"], 1),
+    avail_above_floor_soc=round(avail_soc, 1),
+    dyn_sell_thr=round(thr, 2),
+    smart_charge=sc["should_charge"],
+    pv_kwh=int(pv_kwh),
+    load_kwh=int(load_kwh),
+    solar_power_w=int(solar_power),
+    sunrise_hour=round(sunrise_hour, 2),
+    surplus_deficit=round(surplus, 1),
+    buy_forecast_raw=buy_forecast[:16],
+    sell_forecast_raw=sell_forecast[:16],
+    fip_limitation=feed_in_power_limitation,
+    raw_current_hour=interval_time.hour,
+    interval_time_str=str(interval_time),
+)
