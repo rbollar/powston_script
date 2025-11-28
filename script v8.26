@@ -1,0 +1,1422 @@
+# Priority Rules Decision
+# Powston Dynamic Arbitrage — v8.26 (Structured Reason Format)
+# Author: powston.com.au@bol.la
+# BUILD: 2025-11-28 | Added: Structured reason format (metrics|timeline + P{priority}: description)
+#                     Enhanced timeline icons (💸☀️💰⚡⬇⬆🔋🌙○)
+
+# ═══════════════════════════════════════════════════════════════
+# v8.14 → v8.15 CHANGES
+# ═══════════════════════════════════════════════════════════════
+# CRITICAL SAFETY FIXES (Phase 1):
+# 1. Fixed forecast period bug: 8 hours = 16 periods (not 8 periods)
+# 2. Reordered priorities: Always sell → 99, Fullstop → 98
+# 3. Added Priority 68: Emergency hard floor (5% SOC)
+# 4. Modified Priority 67: Urgency-based buying when critically low
+# 5. Modified Priority 67: Allow negative buy prices (get paid to charge)
+# 6. Modified Priority 65: Floor check (no export if below floor)
+#
+# REVENUE OPTIMIZATION (Phase 2):
+# 7. Modified Priority 60: Arbitrage logic (export below floor if profitable buyback exists)
+# 8. Modified Priority 40: Only charge when optimal OR urgent (don't buy early)
+# 9. New function: calculate_overnight_consumption() - setpoint-aware with temp forecast
+#
+# POLISH (Phase 3):
+# 10. Using combined_soc for dual inverter sync
+# ═══════════════════════════════════════════════════════════════
+
+CONFIG = {
+    # ═══════════════════════════════════════════════════════════
+    # HARDWARE CONFIGURATION
+    # ═══════════════════════════════════════════════════════════
+    "NUM_INVERTERS": 2,
+    "INVERTER_IDS": [43923, 43924],
+    "BATTERY_CAPACITY_KWH": 101.2,
+    "MAX_CHARGE_RATE_KW": 20.0,
+    "MAX_DISCHARGE_RATE_KW": 20.0,
+    "PERIOD_DURATION_HOURS": 0.0833,  # 5 minutes
+    
+    # ═══════════════════════════════════════════════════════════
+    # BATTERY SOC LIMITS
+    # ═══════════════════════════════════════════════════════════
+    "BATTERY_FULL_SOC": 98.0,
+    "EMERGENCY_FLOOR_SOC": 5.0,  # Emergency hard floor (buy at any price)
+    
+    # ═══════════════════════════════════════════════════════════
+    # TIME WINDOWS
+    # ═══════════════════════════════════════════════════════════
+    "PEAK_START": 16,
+    "PEAK_END": 20,
+    "CHARGE_COMPLETE_HOUR": 15,
+    "TEMP_PLANNING_START_HOUR": 16,
+    
+    # ═══════════════════════════════════════════════════════════
+    # PRICE THRESHOLDS (AUD cents/kWh)
+    # ═══════════════════════════════════════════════════════════
+    "MAX_AM_BUY_PRICE": 12.0,
+    "PRE_PEAK_MAX_BUY_PRICE": 12.0,
+    "BASE_MIN_SELL_PRICE": 5.0,
+    "ALWAYS_SELL_PRICE": 35.0,
+    "DRAIN_TO_ZERO_PRICE": 100.0,
+    "ULTRA_CHEAP_BUY_PRICE": 2.0,
+    
+    # ═══════════════════════════════════════════════════════════
+    # TRADING MARGINS
+    # ═══════════════════════════════════════════════════════════
+    "SPIKE_MARGIN": 10.0,
+    "DESIRED_MARGIN": 5.0,
+    
+    # ═══════════════════════════════════════════════════════════
+    # FORECAST & UNCERTAINTY
+    # ═══════════════════════════════════════════════════════════
+    "FUTURE_FORECAST_HOURS": 8,
+    "BUY_UNCERTAINTY_DISCOUNT": 0.03,
+    "SELL_UNCERTAINTY_DISCOUNT": 0.07,
+    
+    # ═══════════════════════════════════════════════════════════
+    # SOLAR FORECASTING
+    # ═══════════════════════════════════════════════════════════
+    "SOLCAST_RAINY_THRESHOLD": 50.0,
+    "SOLCAST_SUNNY_THRESHOLD": 110.0,
+    "CONSERVATIVE_PV_ASSUMPTION": 70.0,
+    
+    # ═══════════════════════════════════════════════════════════
+    # LOAD & RESERVES
+    # ═══════════════════════════════════════════════════════════
+    "PURE_BASE_LOAD_KWH_PER_HOUR": 4.5,  # Base load WITHOUT AC
+    "MIN_SAFETY_BUFFER_KWH": 5.0,
+    "DEFICIT_SAFETY_FACTOR": 0.5,
+    
+    # ═══════════════════════════════════════════════════════════
+    # EXPORT STRATEGY
+    # ═══════════════════════════════════════════════════════════
+    "EXPORT_BUDGET_UTILIZATION": 0.8,
+    
+    # ═══════════════════════════════════════════════════════════
+    # ARBITRAGE SETTINGS (NEW)
+    # ═══════════════════════════════════════════════════════════
+    "ENABLE_PEAK_ARBITRAGE": True,
+    "ARBITRAGE_MIN_SELL_PRICE": 27.0,  # 12¢ assumed buyback + 15¢ spread
+    "ARBITRAGE_MIN_SPREAD": 15.0,  # Minimum profitable spread (cents)
+    "ARBITRAGE_MAX_BUYBACK": 14.4,  # Max acceptable buyback price (12¢ + 20% tolerance)
+    "ARBITRAGE_MIN_SURVIVAL_HOURS": 5.0,  # Must survive 5+ hours to hard floor
+    
+    # ═══════════════════════════════════════════════════════════
+    # AC CONFIGURATION (NEW)
+    # ═══════════════════════════════════════════════════════════
+    "AC_BEDROOM_ZONES_KW": 3.0,
+    "AC_HOUSE_ZONES_KW": 2.0,
+    "AC_SETPOINTS": {
+        "day": {"bedrooms": 25, "house": 25},
+        "night": {"bedrooms": 21, "house": 27},  # 9 PM setpoint change
+    },
+}
+
+# ═══════════════════════════════════════════════════════════════
+# TIMELINE ICONS LEGEND
+# ═══════════════════════════════════════════════════════════════
+
+# Price Signals
+#     💸  Paid to charge            buy_price < 0      # negative buy
+#     ☀️   Solar soaker              sell_price < 0     # negative FiT
+#     💰  High export               sell_price > 0.30
+#     ⚡   Ultra-cheap import        buy_price < 0.03
+
+# Planned Actions
+#     ⬇   Import expected           overnight_period and buy_price < 0.08
+#     ⬆   Export expected           peak_period and sell_price > 0.20
+
+# Normal Operations
+#     🔋  Moderate export           sell_price > 0.15
+#     🌙   Overnight hold            overnight_period (neutral)
+#     ○   Neutral / auto            default state
+
+# Priority Order (first match wins)
+#     1. 💸 Negative buy (paid to import)
+#     2. ☀️ Negative sell (solar soaker)
+#     3. 💰 High export (>30¢)
+#     4. ⚡ Ultra-cheap (<3¢)
+#     5. ⬇ Overnight cheap import
+#     6. ⬆ Peak export expected
+#     7. 🔋 Moderate export (>15¢)
+#     8. 🌙 Overnight period
+#     9. ○ Neutral fallback
+
+
+# ═══════════════════════════════════════════════════════════════
+# HELPER FUNCTIONS
+# ═══════════════════════════════════════════════════════════════
+
+
+def in_window(hour, start, end):
+    """Check if hour is within [start, end) window"""
+    if start < end:
+        return start <= hour < end
+    else:
+        return hour >= start or hour < end
+
+
+def get_combined_soc(battery_soc_input, inverters_dict, inverter_ids_list, mqtt_data_dict=None):
+    """
+    Calculate combined SOC from multiple inverters.
+    V8.25: Added MQTT SOC guard to detect Powston lag.
+    """
+    socs = []
+    for inv_id in inverter_ids_list:
+        inv_key = 'inverter_params_' + str(inv_id)
+        if inv_key in inverters_dict:
+            inv_data = inverters_dict[inv_key]
+            if 'battery_soc' in inv_data:
+                soc_val = inv_data['battery_soc']
+                if isinstance(soc_val, (int, float)):
+                    socs.append(float(soc_val))
+    
+    if len(socs) > 0:
+        powston_soc = sum(socs) / len(socs)
+    else:
+        powston_soc = float(battery_soc_input) if isinstance(battery_soc_input, (int, float)) else 0.0
+    
+    # V8.25: MQTT SOC guard - detect Powston SOC lag
+    # Powston sometimes doesn't update SOC in real-time, causing over/under imports
+    if mqtt_data_dict:
+        try:
+            mqtt_solar = mqtt_data_dict.get('solar_estimate', {})
+            mqtt_soc = float(mqtt_solar.get('combined_pv_battery_state_of_charge', 0.0))
+            
+            if mqtt_soc > 0:  # Valid MQTT data available
+                soc_diff = abs(mqtt_soc - powston_soc)
+                
+                # Max drift possible in 10 minutes at full rate
+                # 20 kW charge/discharge on 101.2 kWh battery = 2% per 10 min
+                max_drift_10min = 2.5  # Conservative: allow 2.5% drift
+                
+                if soc_diff > max_drift_10min:
+                    # Powston is lagging - use MQTT SOC
+                    return mqtt_soc
+        except Exception:
+            pass  # If MQTT fails, continue with Powston SOC
+    
+    return powston_soc
+
+
+def apply_discount(forecast, hours, discount_rate):
+    """Apply exponential discount for uncertainty"""
+    if not forecast or hours <= 0:
+        return forecast
+    discount_factor = (1 - discount_rate) ** hours
+    return [p * discount_factor for p in forecast]
+
+
+def calculate_solar_start_hour(pv_forecast, sunrise_hour):
+    """
+    V8.18: Calculate when meaningful solar production starts.
+    Adapts based on forecast: sunny = earlier, rainy = later
+    """
+    if pv_forecast > 100:  # Sunny day (like 137 kWh)
+        return sunrise_hour + 1.0  # 1 hour after sunrise
+    elif pv_forecast > 60:  # Normal day
+        return sunrise_hour + 2.0  # 2 hours after sunrise
+    else:  # Rainy/cloudy (< 60 kWh)
+        return sunrise_hour + 3.0  # 3 hours after sunrise
+
+
+def calculate_overnight_from_9pm(solar_start_hour, temp_forecast, config):
+    """
+    V8.18: Calculate kWh needed from 9 PM to solar production start.
+    This is the CORE overnight need - simpler than old logic.
+    """
+    hours = solar_start_hour - 21  # 9 PM = hour 21
+    if hours < 0:
+        hours += 24
+    
+    total_kwh = 0
+    
+    for hour_offset in range(int(hours) + 1):
+        hour_of_day = (21 + hour_offset) % 24
+        
+        # Base load (includes typical background AC)
+        base_kwh = config["PURE_BASE_LOAD_KWH_PER_HOUR"]  # type: ignore
+        
+        # Additional temp-aware AC using actual overnight calculation
+        # Get temperature for this hour
+        temp_idx = hour_offset
+        if temp_forecast and temp_idx < len(temp_forecast):
+            temp_c = temp_forecast[temp_idx]
+        else:
+            temp_c = 25.0  # Fallback
+        
+        # Calculate AC for this specific hour
+        ac_kwh = 0
+        
+        # Bedroom zones (21-9): Cool from 25→21°C when hot
+        if 21 <= hour_of_day or hour_of_day < 9:
+            bedroom_setpoint = 21.0
+            if temp_c > bedroom_setpoint:
+                temp_delta = temp_c - bedroom_setpoint
+                ac_kwh += (temp_delta / 10.0) * config["AC_BEDROOM_ZONES_KW"]  # type: ignore
+        
+        # House zones: Relaxed at night (25→27°C)
+        # Only cools if very hot (>27°C)
+        house_setpoint = 27.0
+        if temp_c > house_setpoint:
+            temp_delta = temp_c - house_setpoint
+            ac_kwh += (temp_delta / 10.0) * config["AC_HOUSE_ZONES_KW"]  # type: ignore
+        
+        total_kwh += base_kwh + ac_kwh
+    
+    return total_kwh
+
+
+def calculate_export_schedule(sell_forecast, available_kwh, config):
+    """
+    V8.21: Smart export scheduling - sell during most expensive periods.
+    Similar to import scheduling but for exports.
+    Inlined find_n_most_expensive for Powston compatibility.
+    """
+    if available_kwh < 1 or not sell_forecast:
+        return {"should_export": False}
+    
+    # How many periods needed to export available energy?
+    discharge_rate = config["MAX_DISCHARGE_RATE_KW"]  # type: ignore
+    kwh_per_period = discharge_rate * 0.5  # 30-min periods
+    periods_needed = int((available_kwh / kwh_per_period) + 1)
+    periods_needed = min(periods_needed, len(sell_forecast))
+    
+    if periods_needed > 0:
+        # Find most expensive N periods (inlined for Powston compatibility)
+        indexed_prices = [(i, price) for i, price in enumerate(sell_forecast)]
+        sorted_prices = sorted(indexed_prices, key=lambda x: x[1], reverse=True)
+        best_periods = sorted_prices[:periods_needed]
+        
+        if best_periods:
+            # Is current period (index 0) in the best periods?
+            best_indices = [idx for idx, price in best_periods]
+            
+            if 0 in best_indices:
+                # Current period IS one of the best - export now!
+                return {
+                    "should_export": True,
+                    "reason": "Optimal export period",
+                    "rank": best_indices.index(0) + 1,
+                    "total_best": len(best_periods),
+                    "current_price": sell_forecast[0] if sell_forecast else 0
+                }
+            else:
+                # Current period NOT in best - wait
+                best_price = best_periods[0][1]
+                best_period_idx = best_periods[0][0]
+                return {
+                    "should_export": False,
+                    "reason": "Wait for better price",
+                    "best_price": best_price,
+                    "best_period_in": best_period_idx,  # periods away
+                }
+    
+    return {"should_export": False}
+
+
+def calculate_import_schedule(current_hour, current_soc, floor_at_9pm_soc, buy_forecast, config):
+    """
+    V8.18: Smart import scheduling - buy during cheapest periods to reach 9 PM target.
+    This is the missing piece that prevents emergency expensive imports.
+    """
+    battery_kwh = config["BATTERY_CAPACITY_KWH"]  # type: ignore
+    
+    # Only schedule imports before 9 PM
+    if current_hour >= 21:
+        return {"should_import": False}
+    
+    hours_to_9pm = 21 - current_hour
+    
+    # Estimate consumption until 9 PM (conservative)
+    avg_load = config["PURE_BASE_LOAD_KWH_PER_HOUR"] + 1.0  # type: ignore  # Base + some AC
+    consumption_kwh = hours_to_9pm * avg_load
+    
+    # Current energy
+    current_kwh = (current_soc / 100) * battery_kwh
+    
+    # Target at 9 PM
+    target_kwh = (floor_at_9pm_soc / 100) * battery_kwh
+    
+    # Net deficit (what we need to import)
+    deficit_kwh = (target_kwh + consumption_kwh) - current_kwh
+    
+    if deficit_kwh > 5:  # Only if significant deficit
+        # How many 30-min periods to charge?
+        charge_rate = 20  # kW (both inverters)
+        periods_needed = int((deficit_kwh / (charge_rate * 0.5)) + 1)
+        
+        # Find cheapest N periods in forecast (inlined for Powston compatibility)
+        if buy_forecast and len(buy_forecast) > 0:
+            # Inline: find_n_cheapest_periods logic
+            indexed_prices = [(i, price) for i, price in enumerate(buy_forecast)]
+            sorted_prices = sorted(indexed_prices, key=lambda x: x[1])
+            cheapest = sorted_prices[:min(periods_needed, len(buy_forecast))]
+            
+            # Are we in a cheap period NOW? (first period = current)
+            if cheapest and cheapest[0][0] == 0:  # Index 0 = current period
+                return {
+                    "should_import": True,
+                    "reason": "Scheduled import @ %.1fc" % cheapest[0][1],
+                    "price": cheapest[0][1],
+                    "deficit_kwh": deficit_kwh,
+                    "periods_needed": periods_needed
+                }
+    
+    return {"should_import": False}
+
+
+def calculate_overnight_consumption(current_hour, sunrise_hour, temp_forecast_full, config):
+    """
+    Calculate overnight consumption using setpoint-aware AC model.
+    Uses actual temperature forecast from Powston API.
+    
+    IMPORTANT: "Overnight" means 9 PM to sunrise, not current hour to sunrise.
+    During daytime (before 9 PM), this calculates future overnight period.
+    
+    Args:
+        current_hour: Current hour (0-23 + decimal)
+        sunrise_hour: Hour of sunrise (e.g., 4.78)
+        temp_forecast_full: Full 48-hour temp forecast from Powston
+        config: CONFIG dictionary
+    
+    Returns:
+        total_kwh: Projected overnight consumption (9 PM to sunrise)
+    """
+    pure_base = config["PURE_BASE_LOAD_KWH_PER_HOUR"]
+    setpoints = config["AC_SETPOINTS"]
+    
+    # Determine start hour for overnight calculation
+    # If before 9 PM, calculate from 9 PM onward (future overnight period)
+    # If after 9 PM, calculate from now onward (current overnight period)
+    if current_hour < 21:
+        start_hour = 21  # Future: calculate from 9 PM
+        # Temp forecast offset to 9 PM
+        hours_until_start = 21 - current_hour
+    else:
+        start_hour = current_hour  # Current: calculate from now
+        hours_until_start = 0
+    
+    hours_to_sunrise = sunrise_hour - start_hour
+    if hours_to_sunrise < 0:
+        hours_to_sunrise += 24
+    
+    total_kwh = 0
+    
+    # Project hour by hour from start_hour to sunrise
+    for hour_offset in range(int(hours_to_sunrise)):
+        hour = int((start_hour + hour_offset) % 24)
+        
+        # Get temp from forecast (offset by hours_until_start)
+        temp_idx = int(hours_until_start + hour_offset)
+        if temp_idx < len(temp_forecast_full):
+            ambient_temp = temp_forecast_full[temp_idx]
+        else:
+            ambient_temp = 20  # Default cool
+        
+        # INLINED: Calculate AC load (from calculate_ac_load_for_hour)
+        # Determine active setpoints
+        if 21 <= hour or hour < 9:  # 9 PM - 9 AM: Night setpoints
+            bedroom_setpoint = setpoints["night"]["bedrooms"]
+            house_setpoint = setpoints["night"]["house"]
+        else:  # 9 AM - 9 PM: Day setpoints
+            bedroom_setpoint = setpoints["day"]["bedrooms"]
+            house_setpoint = setpoints["day"]["house"]
+        
+        bedroom_delta = ambient_temp - bedroom_setpoint
+        house_delta = ambient_temp - house_setpoint
+        
+        # Bedroom AC load
+        if bedroom_delta <= 0:
+            bedroom_ac_kw = 0.0
+        elif bedroom_delta <= 2:
+            bedroom_ac_kw = config["AC_BEDROOM_ZONES_KW"] * 0.3  # type: ignore
+        elif bedroom_delta <= 4:
+            bedroom_ac_kw = config["AC_BEDROOM_ZONES_KW"] * 0.7  # type: ignore
+        else:
+            bedroom_ac_kw = config["AC_BEDROOM_ZONES_KW"] * 1.0  # type: ignore
+        
+        # House AC load
+        if house_delta <= 0:
+            house_ac_kw = 0.0
+        elif house_delta <= 2:
+            house_ac_kw = config["AC_HOUSE_ZONES_KW"] * 0.2  # type: ignore
+        elif house_delta <= 4:
+            house_ac_kw = config["AC_HOUSE_ZONES_KW"] * 0.5  # type: ignore
+        else:
+            house_ac_kw = config["AC_HOUSE_ZONES_KW"] * 0.8  # type: ignore
+        
+        ac_load_kw = bedroom_ac_kw + house_ac_kw
+        # END INLINED
+        
+        # Total = pure base + AC
+        hour_kwh = pure_base + ac_load_kw
+        total_kwh += hour_kwh
+    
+    # Handle partial final hour
+    partial = hours_to_sunrise % 1
+    if partial > 0:
+        final_hour = int(sunrise_hour)
+        final_temp_idx = int(hours_until_start + hours_to_sunrise)
+        if final_temp_idx < len(temp_forecast_full):
+            final_temp = temp_forecast_full[final_temp_idx]
+        else:
+            final_temp = 18
+        
+        # INLINED: Calculate AC load for partial hour
+        if 21 <= final_hour or final_hour < 9:
+            bedroom_setpoint = setpoints["night"]["bedrooms"]
+            house_setpoint = setpoints["night"]["house"]
+        else:
+            bedroom_setpoint = setpoints["day"]["bedrooms"]
+            house_setpoint = setpoints["day"]["house"]
+        
+        bedroom_delta = final_temp - bedroom_setpoint
+        house_delta = final_temp - house_setpoint
+        
+        if bedroom_delta <= 0:
+            bedroom_ac_kw = 0.0
+        elif bedroom_delta <= 2:
+            bedroom_ac_kw = config["AC_BEDROOM_ZONES_KW"] * 0.3  # type: ignore
+        elif bedroom_delta <= 4:
+            bedroom_ac_kw = config["AC_BEDROOM_ZONES_KW"] * 0.7  # type: ignore
+        else:
+            bedroom_ac_kw = config["AC_BEDROOM_ZONES_KW"] * 1.0  # type: ignore
+        
+        if house_delta <= 0:
+            house_ac_kw = 0.0
+        elif house_delta <= 2:
+            house_ac_kw = config["AC_HOUSE_ZONES_KW"] * 0.2  # type: ignore
+        elif house_delta <= 4:
+            house_ac_kw = config["AC_HOUSE_ZONES_KW"] * 0.5  # type: ignore
+        else:
+            house_ac_kw = config["AC_HOUSE_ZONES_KW"] * 0.8  # type: ignore
+        
+        ac_load_kw = bedroom_ac_kw + house_ac_kw
+        # END INLINED
+        
+        total_kwh += (pure_base + ac_load_kw) * partial
+    
+    return total_kwh
+
+
+def is_optimal_overnight_buy_with_urgency(buy_price, buy_disc, battery_soc, active_floor):
+    """
+    V8.23: Determine if this is a good time to buy overnight.
+    CRITICAL FIX: Only look at REACHABLE periods based on battery survival time.
+    Don't wait for cheap prices 6 hours away if battery empty in 2 hours!
+    """
+    if not buy_disc:
+        return True  # No forecast, buy now
+    
+    # Calculate urgency based on SOC deficit
+    soc_deficit = active_floor - battery_soc
+    
+    # V8.23: Calculate survival time (how long until battery empty)
+    battery_kwh = 101.2
+    emergency_floor = 5.0
+    available_kwh = max(0, (battery_soc - emergency_floor) / 100 * battery_kwh)
+    consumption_rate = 5.0  # kWh/h conservative estimate
+    survival_hours = available_kwh / consumption_rate if consumption_rate > 0 else 0
+    
+    # V8.23: Only look at reachable periods (survival window)
+    reachable_periods = max(1, int(survival_hours * 2))  # 2 periods per hour
+    reachable_periods = min(reachable_periods, len(buy_disc))
+    reachable_forecast = buy_disc[:reachable_periods]
+    
+    if soc_deficit >= 15:  # 15%+ below floor = EMERGENCY
+        # V8.23: Find cheapest in REACHABLE periods only
+        if reachable_forecast:
+            min_reachable = min(reachable_forecast)
+            # If survival < 3 hours, buy if within 10¢ of reachable minimum
+            if survival_hours < 3:
+                return buy_price <= (min_reachable + 10.0)
+            else:
+                return buy_price <= (min_reachable + 5.0)
+        else:
+            return True  # No forecast, buy now
+        
+    elif soc_deficit >= 10:  # 10-15% below = URGENT
+        if reachable_forecast:
+            min_reachable = min(reachable_forecast)
+            if survival_hours < 3:
+                return buy_price <= (min_reachable + 7.0)
+            else:
+                return buy_price <= (min_reachable + 3.0)
+        else:
+            return True
+        
+    elif soc_deficit >= 5:  # 5-10% below = MODERATE
+        if reachable_forecast:
+            min_reachable = min(reachable_forecast)
+            return buy_price <= (min_reachable + 2.0)
+        else:
+            return True
+        
+    else:  # <5% below = NORMAL
+        # Original conservative logic (can look at full forecast)
+        cheaper_count = 0
+        for p in buy_disc:
+            if p < buy_price:
+                cheaper_count = cheaper_count + 1
+        periods_needed = len(buy_disc) // 3
+        return cheaper_count < periods_needed
+
+
+# ═══════════════════════════════════════════════════════════════
+# MAIN EXECUTION
+# ═══════════════════════════════════════════════════════════════
+
+hour = interval_time.hour + interval_time.minute / 60.0
+sunrise_hour = sunrise.hour + sunrise.minute / 60.0 + sunrise.second / 3600.0
+peak_start_val = float(CONFIG["PEAK_START"])
+peak_end_actual = float(CONFIG["PEAK_END"]) + 1.0
+
+# V8.15: Use combined SOC from both inverters
+# V8.25: Pass mqtt_data for SOC guard (happens inside get_combined_soc)
+battery_soc = get_combined_soc(battery_soc, inverters, CONFIG["INVERTER_IDS"], mqtt_data)
+
+# Determine time period
+if hour < sunrise_hour or hour >= 21:
+    time_period = "Night"
+elif sunrise_hour <= hour < peak_start_val:
+    time_period = "Day"
+else:
+    time_period = "Peak"
+
+# Get hourly GTI forecast
+hourly_gti = []
+try:
+    hourly_data = weather_data.get('hourly', {})
+    gti_raw = hourly_data.get('global_tilted_irradiance_instant', [])
+    if gti_raw:
+        hourly_gti = gti_raw
+except Exception:
+    hourly_gti = []
+
+# Get solar surplus/deficit from HA
+pv_remaining_kwh = 0.0
+solar_surplus_deficit = 0.0
+
+try:
+    mqtt_solar = mqtt_data.get('solar_estimate', {})
+    pv_remaining_kwh = float(mqtt_solar.get('solar_estimate_remaining', 0.0))
+    solar_surplus_deficit = float(mqtt_solar.get('solar_surplus_deficit', 0.0))
+except Exception:
+    pass
+
+daytime_deficit_kwh = max(0.0, -solar_surplus_deficit)
+
+# Get PV forecast for tomorrow (for overnight floor)
+pv_forecast_tomorrow = 0
+forecast_source = "none"
+
+try:
+    mqtt_solar = mqtt_data.get('solar_estimate', {})
+    
+    # Before 2 PM: Use TODAY's forecast
+    # After 2 PM: Use TOMORROW's forecast
+    if hour < 14:
+        pv_today = mqtt_solar.get('pv_forecast_today', None)
+        if pv_today and pv_today > 0:
+            pv_forecast_tomorrow = pv_today
+            forecast_source = "solcast_today"
+    else:
+        pv_tomorrow = mqtt_solar.get('pv_forecast_tomorrow', None)
+        if pv_tomorrow and pv_tomorrow > 0:
+            pv_forecast_tomorrow = pv_tomorrow
+            forecast_source = "solcast_tomorrow"
+except Exception:
+    pass
+
+# GTI fallback if no Solcast
+pv_tomorrow = 0
+solar_cls = "normal"
+if pv_forecast_tomorrow == 0 and hourly_gti:
+    try:
+        current_idx = int(hour)
+        tomorrow_start = 24 - current_idx
+        tomorrow_gti = hourly_gti[tomorrow_start:tomorrow_start + 24] if tomorrow_start < len(hourly_gti) else []
+        if tomorrow_gti:
+            gti_sum = sum(tomorrow_gti)
+            pv_tomorrow = gti_sum * 0.02
+            forecast_source = "gti"
+            
+            if gti_sum < CONFIG["SOLCAST_RAINY_THRESHOLD"] * 50:  # type: ignore
+                solar_cls = "rainy"
+            elif gti_sum > CONFIG["SOLCAST_SUNNY_THRESHOLD"] * 50:  # type: ignore
+                solar_cls = "sunny"
+    except Exception:
+        pass
+
+if pv_tomorrow == 0:
+    pv_tomorrow = 80.0
+    forecast_source = "default"
+
+# Use best available forecast
+if pv_forecast_tomorrow > 0:
+    pv_tomorrow = pv_forecast_tomorrow
+    if pv_tomorrow < CONFIG["SOLCAST_RAINY_THRESHOLD"]:  # type: ignore
+        solar_cls = "rainy"
+    elif pv_tomorrow > CONFIG["SOLCAST_SUNNY_THRESHOLD"]:  # type: ignore
+        solar_cls = "sunny"
+    else:
+        solar_cls = "normal"
+
+# V8.15: FIX FORECAST PERIOD BUG - Get 8 HOURS, not 8 periods
+buy_disc = []
+sell_disc = []
+try:
+    future_hours = int(CONFIG["FUTURE_FORECAST_HOURS"])  # type: ignore
+    periods_per_hour = 2  # Powston forecast is 30-min intervals
+    num_periods = future_hours * periods_per_hour  # 8 hours × 2 = 16 periods
+    
+    buy_raw = buy_forecast[:num_periods]
+    sell_raw = sell_forecast[:num_periods]
+    buy_disc = apply_discount(buy_raw, future_hours, CONFIG["BUY_UNCERTAINTY_DISCOUNT"])
+    sell_disc = apply_discount(sell_raw, future_hours, CONFIG["SELL_UNCERTAINTY_DISCOUNT"])
+except Exception:
+    pass
+
+# V8.15: Get temperature forecast (already in weather_data from Powston API)
+temp_forecast = []
+try:
+    temp_forecast = weather_data.get('hourly', {}).get('temperature_2m', [])
+except Exception:
+    pass
+
+# V8.18: NEW ARCHITECTURE - 9 PM Target Floor Calculation
+# ═══════════════════════════════════════════════════════════════
+# Core concept: Calculate what we need AT 9 PM to reach solar production.
+# During peak: Work backward from 9 PM target.
+# Before peak: Schedule cheapest imports to reach target.
+# ═══════════════════════════════════════════════════════════════
+
+# Step 1: When does meaningful solar production start?
+solar_start_hour = calculate_solar_start_hour(pv_tomorrow, sunrise_hour)
+
+# Step 2: Calculate overnight need (9 PM → solar start)
+if temp_forecast:
+    overnight_from_9pm_kwh = calculate_overnight_from_9pm(solar_start_hour, temp_forecast, CONFIG)
+else:
+    # Fallback: simple calculation
+    hours = solar_start_hour - 21
+    if hours < 0:
+        hours += 24
+    load_rate = CONFIG["PURE_BASE_LOAD_KWH_PER_HOUR"] + 2.0  # type: ignore  # Base + AC estimate
+    overnight_from_9pm_kwh = hours * load_rate
+
+# Step 3: Floor at 9 PM = overnight + 5% safety
+battery_kwh = float(CONFIG["BATTERY_CAPACITY_KWH"])
+safety_kwh = battery_kwh * 0.05  # 5% safety buffer (5.06 kWh for 101.2 kWh battery)
+floor_at_9pm_kwh = overnight_from_9pm_kwh + safety_kwh
+floor_at_9pm_soc = (floor_at_9pm_kwh / battery_kwh) * 100
+
+# Cap at battery capacity
+floor_at_9pm_soc = min(floor_at_9pm_soc, CONFIG["BATTERY_FULL_SOC"])
+
+# Step 4: Calculate active floor based on time period
+if in_window(hour, peak_start_val, peak_end_actual):
+    # DURING PEAK (4-9 PM): Work backward from 9 PM target
+    hours_to_9pm = 21.0 - hour
+    
+    if hours_to_9pm > 0:
+        # Consumption until 9 PM (peak usage)
+        peak_load_rate = CONFIG["PURE_BASE_LOAD_KWH_PER_HOUR"] * 1.5  # type: ignore  # Higher during peak
+        consumption_until_9pm = hours_to_9pm * peak_load_rate
+        
+        # Active floor NOW = what we need at 9 PM + what we'll consume getting there
+        active_floor_kwh = floor_at_9pm_kwh + consumption_until_9pm
+        active_floor = (active_floor_kwh / battery_kwh) * 100
+        
+        # Cap at battery capacity
+        active_floor = min(active_floor, CONFIG["BATTERY_FULL_SOC"])
+        
+        # Available to export NOW
+        available_now_soc = battery_soc - active_floor
+        available_now_kwh = max(0, (available_now_soc / 100) * battery_kwh)
+        final_budget_kwh = available_now_kwh * CONFIG["EXPORT_BUDGET_UTILIZATION"]
+    else:
+        # At or past 9 PM: just use 9 PM target
+        active_floor = floor_at_9pm_soc
+        avail_above_floor_soc = max(0, battery_soc - active_floor)
+        final_budget_kwh = (avail_above_floor_soc / 100) * battery_kwh * CONFIG["EXPORT_BUDGET_UTILIZATION"]
+else:
+    # OUTSIDE PEAK: Use 9 PM floor as target
+    active_floor = floor_at_9pm_soc
+    avail_above_floor_soc = max(0, battery_soc - active_floor)
+    final_budget_kwh = (avail_above_floor_soc / 100) * battery_kwh * CONFIG["EXPORT_BUDGET_UTILIZATION"]
+
+# V8.18: For logging/debugging - keep old variable names for compatibility
+overnight_load_kwh = overnight_from_9pm_kwh
+overnight_reserve_soc = (overnight_from_9pm_kwh / battery_kwh) * 100
+deficit_tomorrow_kwh = 0  # No longer used in v8.18
+deficit_reserve_soc = 0  # No longer used in v8.18
+safety_buffer_soc = (safety_kwh / battery_kwh) * 100
+total_floor_soc = floor_at_9pm_soc
+
+# V8.24: Calculate minimal overnight import target (NOT the floor!)
+# After 9 PM, we shouldn't import to reach floor (51%), only to reach solar start + buffer
+# Note: Use same logic as is_night_hours to handle midnight rollover
+if hour >= 21 or hour < sunrise_hour:
+    # Solar starts 1-3 hours after sunrise based on PV forecast
+    solar_start_hour = calculate_solar_start_hour(pv_tomorrow, sunrise_hour)
+    if hour < solar_start_hour:
+        hours_to_solar = solar_start_hour - hour
+    else:
+        hours_to_solar = (24 - hour) + solar_start_hour
+    
+    # Consumption until solar start
+    consumption_to_solar = hours_to_solar * CONFIG["PURE_BASE_LOAD_KWH_PER_HOUR"]  # type: ignore
+    consumption_to_solar_soc = (consumption_to_solar / battery_kwh) * 100
+    
+    # Minimal target = emergency + consumption (same logic as floor calculation)
+    emergency_floor = float(CONFIG["EMERGENCY_FLOOR_SOC"])  # type: ignore  # 5%
+    overnight_minimal_target = emergency_floor + consumption_to_solar_soc
+else:
+    # Before 9 PM, no minimal target (use active_floor as normal)
+    overnight_minimal_target = active_floor
+
+# Determine if current period is optimal for buy/sell
+best_buy_threshold = 999.0
+best_sell_threshold = 0.0
+is_optimal_buy = False
+is_optimal_sell = False
+is_optimal_overnight_sell = False
+
+# Daytime: Find if current price is in cheapest N periods
+if buy_disc and daytime_deficit_kwh > 2:
+    kwh_per_period = CONFIG["MAX_CHARGE_RATE_KW"] * CONFIG["PERIOD_DURATION_HOURS"]  # type: ignore
+    periods_needed = int((daytime_deficit_kwh / kwh_per_period) + 1)
+    periods_needed = min(periods_needed, len(buy_disc))
+    
+    if periods_needed > 0:
+        cheaper_count = 0
+        for p in buy_disc:
+            if p < buy_price:
+                cheaper_count = cheaper_count + 1
+        is_optimal_buy = cheaper_count < periods_needed
+
+# Peak: Find if current price is in most expensive N periods
+if sell_disc and final_budget_kwh > 2:
+    kwh_per_period = CONFIG["MAX_DISCHARGE_RATE_KW"] * CONFIG["PERIOD_DURATION_HOURS"]  # type: ignore
+    periods_needed = int((final_budget_kwh / kwh_per_period) + 1)
+    peak_window = min(5, len(sell_disc))
+    periods_needed = min(periods_needed, peak_window)
+    
+    if periods_needed > 0:
+        expensive_count = 0
+        for i in range(peak_window):
+            if sell_disc[i] > sell_price:
+                expensive_count = expensive_count + 1
+        is_optimal_sell = expensive_count < periods_needed and sell_price > 10
+
+# Overnight sell: check if in top N most expensive
+is_night_hours = hour >= 21 or hour < sunrise_hour
+
+if is_night_hours:
+    if battery_soc > active_floor and sell_disc:
+        overnight_avail = (battery_soc - active_floor) / 100 * battery_kwh
+        kwh_per_period = CONFIG["MAX_DISCHARGE_RATE_KW"] * CONFIG["PERIOD_DURATION_HOURS"]  # type: ignore
+        periods_needed = int((overnight_avail / kwh_per_period) + 1)
+        periods_needed = min(periods_needed, len(sell_disc))
+        
+        if periods_needed > 0 and sell_price > 5:
+            expensive_count = 0
+            for p in sell_disc:
+                if p > sell_price:
+                    expensive_count = expensive_count + 1
+            is_optimal_overnight_sell = expensive_count < periods_needed
+
+# V8.15: Use urgency-based overnight buy logic
+# V8.24: Pass overnight_minimal_target for correct deficit calculation
+is_optimal_overnight_buy = is_optimal_overnight_buy_with_urgency(
+    buy_price,
+    buy_disc,
+    battery_soc,
+    overnight_minimal_target  # V8.24: Use minimal target, not active_floor
+)
+
+# Floor info dict
+floor = {
+    "overnight_reserve_soc": overnight_reserve_soc,
+    "deficit_reserve_soc": deficit_reserve_soc,
+    "safety_buffer_soc": safety_buffer_soc,
+    "import_floor": total_floor_soc,
+    "export_floor": active_floor,
+    "budget": final_budget_kwh,
+    "overnight_kwh": overnight_load_kwh,
+    "deficit_kwh": deficit_tomorrow_kwh,
+    "safety_kwh": safety_kwh,
+    "daytime_deficit_kwh": daytime_deficit_kwh,
+    "solar_remaining_kwh": pv_remaining_kwh,
+    "solar_surplus_deficit": solar_surplus_deficit,
+    "best_buy_threshold": best_buy_threshold,
+    "best_sell_threshold": best_sell_threshold,
+}
+
+# V8.26: Build enhanced timeline future periods (1-7) with forecast-based icons
+timeline_future = ""
+
+for i in range(1, 8):
+    buy = buy_disc[i] if i < len(buy_disc) else 0
+    sell = sell_disc[i] if i < len(sell_disc) else 0
+    period_hour = hour + (i * 0.5)  # Each period is 30 min
+    
+    # Determine if this period would trigger import/export
+    # Check for special pricing conditions first
+    if buy < 0:
+        timeline_future = timeline_future + "💸"  # Negative buy (paid to charge)
+    elif sell < 0:
+        timeline_future = timeline_future + "☀️"  # Negative FiT (solar soaker)
+    elif sell > 30:
+        timeline_future = timeline_future + "💰"  # High export opportunity (>30c)
+    elif buy < 3:
+        timeline_future = timeline_future + "⚡"  # Ultra cheap import (<3c)
+    elif sell > 20 and (period_hour >= 16 and period_hour < 21):
+        timeline_future = timeline_future + "⬆"   # Peak export likely
+    elif buy < 8 and (period_hour >= 21 or period_hour < sunrise_hour):
+        timeline_future = timeline_future + "⬇"   # Overnight cheap import
+    elif period_hour >= 21 or period_hour < sunrise_hour:
+        timeline_future = timeline_future + "🌙"  # Overnight hold
+    elif sell > 15:
+        timeline_future = timeline_future + "🔋"  # Moderate export opportunity
+    else:
+        timeline_future = timeline_future + "○"   # Neutral/auto
+
+# V8.26: Build context-aware status metrics
+battery_kwh_current = battery_soc / 100 * battery_kwh
+floor_kwh = active_floor / 100 * battery_kwh
+
+# Build metrics string based on time period
+if time_period == "Day":
+    # Daytime: Show solar remaining and energy balance
+    metrics_str = "☀️%.0fkWh" % pv_remaining_kwh
+    
+    if solar_surplus_deficit > 5:
+        metrics_str = metrics_str + " +%.0fkWh" % solar_surplus_deficit
+    elif solar_surplus_deficit < -2:
+        metrics_str = metrics_str + " →%.0fkWh" % abs(solar_surplus_deficit)
+    
+    # Detail for charging phase
+    if hour < CONFIG["CHARGE_COMPLETE_HOUR"]:  # type: ignore
+        if daytime_deficit_kwh > 2:
+            detail_str = "Need %.0fkWh by 3pm" % daytime_deficit_kwh
+        else:
+            detail_str = "On track"
+    else:
+        # Detail for afternoon/peak approach
+        distance_kwh = battery_kwh_current - floor_kwh
+        if distance_kwh > 20:
+            detail_str = "%.0fkWh above floor" % distance_kwh
+        else:
+            detail_str = "⚠️ %.0fkWh above floor" % distance_kwh
+
+elif time_period == "Peak":
+    # Peak: Show SOC vs floor with available budget
+    metrics_str = "🔋%.0f%%/%.0f%%" % (battery_soc, active_floor)
+    
+    if final_budget_kwh > 2:
+        metrics_str = metrics_str + " +%.0fkWh" % final_budget_kwh
+        detail_str = "%.0fkWh available" % final_budget_kwh
+    else:
+        detail_str = "At floor"
+
+else:  # Night
+    # V8.25: Show minimal target (not floor) when past 9 PM
+    if hour >= 21 or hour < sunrise_hour:
+        # After 9 PM: Show SOC and minimal target with hours to solar
+        target_kwh = (overnight_minimal_target / 100) * battery_kwh
+        target_pct = overnight_minimal_target
+        
+        # Calculate hours to solar for display
+        solar_start_hour_calc = calculate_solar_start_hour(pv_tomorrow, sunrise_hour)
+        if hour < solar_start_hour_calc:
+            hours_left = solar_start_hour_calc - hour
+        else:
+            hours_left = (24 - hour) + solar_start_hour_calc
+        
+        metrics_str = "🔋%.0f%%→%.0f%% %.1fh" % (battery_soc, target_pct, hours_left)
+    else:
+        # Before 9 PM: Show SOC and floor target
+        target_kwh = floor_kwh
+        metrics_str = "🔋%.0f%%→%.0f%%" % (battery_soc, active_floor)
+    
+    # Calculate deficit/cushion for detail
+    deficit_kwh = target_kwh - battery_kwh_current
+    cushion_kwh = battery_kwh_current - target_kwh
+    
+    if cushion_kwh > 5:
+        detail_str = "+%.0fkWh cushion" % cushion_kwh
+    elif cushion_kwh > 0:
+        detail_str = "On track"
+    elif deficit_kwh > 2:
+        detail_str = "⚠️ Need %.0fkWh" % deficit_kwh
+    else:
+        detail_str = "⚠️ Close to target"
+
+# Initialize feed_in_power_limitation to unlimited (10000W)
+# Will be overridden to 100W for trickle export
+feed_in_power_limitation = 10000
+
+# Initialize action tracking
+current_action = "auto"
+action_quality = "neutral"
+
+# Initialize thresholds
+DRAIN_TO_ZERO = float(CONFIG["DRAIN_TO_ZERO_PRICE"])
+BATTERY_FULL = float(CONFIG["BATTERY_FULL_SOC"])
+EMERGENCY_FLOOR = float(CONFIG["EMERGENCY_FLOOR_SOC"])
+
+# ═══════════════════════════════════════════════════════════════
+# PRIORITY DECISIONS (ALL PRIORITIES EVALUATED, HIGHEST WINS)
+# ═══════════════════════════════════════════════════════════════
+
+# V8.15: Priority 99 — Always sell threshold (MOVED FROM 80)
+if sell_price >= 35:
+    current_action = "export"
+    action_quality = "good"
+    # V8.26: Structured reason format
+    reason_line1 = "💰 %.1fc sell|🔋%.0f%%" % (sell_price, battery_soc)
+    reason_line2 = "P99: Spike export"
+    action = decisions.reason(
+        "export",
+        "%s\n%s" % (reason_line1, reason_line2),
+        priority=99,
+        sell=sell_price
+    )
+
+# V8.15: Priority 98 — Fullstop (MOVED FROM 99)
+if buy_price < 0 and battery_soc >= BATTERY_FULL:
+    current_action = "fullstop"
+    action_quality = "good"
+    # V8.26: Structured reason format
+    reason_line1 = "💸 %.1fc buy|🔋%.0f%%" % (buy_price, battery_soc)
+    reason_line2 = "P98: Negative pricing - Battery full"
+    action = decisions.reason(
+        "fullstop",
+        "%s\n%s" % (reason_line1, reason_line2),
+        priority=98,
+        buy=buy_price,
+        soc=battery_soc,
+    )
+
+# Priority 95 — auto_api_curtail (battery full + solar active)
+if battery_soc >= BATTERY_FULL and time_period != "Night":
+    current_action = "auto_api_curtail"
+    action_quality = "warning"
+    # V8.26: Structured reason format
+    reason_line1 = "🔋%.0f%% Full|Curtail" % battery_soc
+    reason_line2 = "P95: Battery full - Curtailing solar"
+    action = decisions.reason(
+        "auto_api_curtail",
+        "%s\n%s" % (reason_line1, reason_line2),
+        priority=95,
+        soc=battery_soc,
+    )
+
+# Priority 90 — Drain-to-zero pricing
+if sell_price >= DRAIN_TO_ZERO and battery_soc > 10:
+    current_action = "export"
+    action_quality = "good"
+    # V8.26: Structured reason format
+    reason_line1 = "☀️ %.1fc sell|🔋%.0f%%" % (sell_price, battery_soc)
+    reason_line2 = "P90: Drain-to-zero @ %.1fc" % sell_price
+    action = decisions.reason(
+        "export",
+        "%s\n%s" % (reason_line1, reason_line2),
+        priority=90,
+        sell=sell_price,
+        soc=battery_soc,
+    )
+
+# Priority 85 — Morning sell margin
+if 5 <= hour < 12 and buy_price >= 85 and battery_soc >= 58:
+    current_action = "export"
+    action_quality = "good"
+    # V8.26: Structured reason format
+    reason_line1 = "🌅 %.2fc|🔋%.0f%%" % (buy_price, battery_soc)
+    reason_line2 = "P85: Morning sell opportunity"
+    action = decisions.reason(
+        "export",
+        "%s\n%s" % (reason_line1, reason_line2),
+        priority=85,
+    )
+
+# V8.15: Priority 68 — EMERGENCY hard floor (NEW)
+if battery_soc <= EMERGENCY_FLOOR:
+    current_action = "import"
+    action_quality = "critical"
+    # V8.26: Structured reason format
+    reason_line1 = "🚨 %.1fc buy|🔋%.0f%%" % (buy_price, battery_soc)
+    reason_line2 = "P68: EMERGENCY - Battery %.0f%%" % battery_soc
+    action = decisions.reason(
+        "import",
+        "%s\n%s" % (reason_line1, reason_line2),
+        priority=68,
+        buy=buy_price,
+        soc=battery_soc,
+    )
+
+# V8.15: Priority 67 — Floor protection with urgency (MODIFIED)
+# V8.24: Use minimal overnight target (not floor) for imports after 9 PM
+if is_night_hours and battery_soc < active_floor:
+    # V8.24: Determine import target based on time
+    # Use is_night_hours logic (hour >= 21 OR hour < sunrise) to handle midnight rollover
+    if hour >= 21 or hour < sunrise_hour:
+        # Overnight period: Import only to minimal target (emergency + buffer + consumption to solar)
+        import_target = overnight_minimal_target
+        target_label = "survival"
+    else:
+        # Before 9 PM: Import to active floor (to reach 9 PM target)
+        import_target = active_floor
+        target_label = "floor"
+    
+    # V8.15: Allow negative buy prices (removed buy_price > 0 check)
+    # V8.15: Use urgency-based logic (is_optimal_overnight_buy now has urgency)
+    if is_optimal_overnight_buy or not buy_disc:
+        current_action = "import"
+        action_quality = "warning"
+        
+        # Determine urgency level for display
+        soc_deficit = import_target - battery_soc
+        if soc_deficit >= 15:
+            urgency_str = "CRITICAL"
+        elif soc_deficit >= 10:
+            urgency_str = "URGENT"
+        elif soc_deficit >= 5:
+            urgency_str = "MODERATE"
+        else:
+            urgency_str = ""
+        
+        if urgency_str:
+            reason_line2 = "P67: %s %s @ %.1fc" % (urgency_str, target_label, buy_price)
+        else:
+            reason_line2 = "P67: %s @ %.1fc" % (target_label, buy_price)
+        
+        # V8.26: Structured reason format
+        reason_line1 = "⚠️ %.1fc|🔋%.0f%%→%.0f%%" % (buy_price, battery_soc, import_target)
+        
+        action = decisions.reason(
+            "import",
+            "%s\n%s" % (reason_line1, reason_line2),
+            priority=67,
+            buy=buy_price,
+            soc=battery_soc,
+        )
+
+# V8.15: Priority 65 — Overnight opportunistic sell with floor check (MODIFIED)
+if is_night_hours and sell_price > 5:
+    # V8.15: Added floor check - don't export if below floor
+    if battery_soc > active_floor:
+        if is_optimal_overnight_sell:
+            current_action = "export"
+            action_quality = "good"
+            overnight_avail = (battery_soc - active_floor) / 100 * battery_kwh
+            # V8.26: Structured reason format
+            reason_line1 = "💰 %.1fc sell|🔋%.0f%% +%.0fkWh" % (sell_price, battery_soc, overnight_avail)
+            reason_line2 = "P65: Overnight export opportunity"
+            action = decisions.reason(
+                "export",
+                "%s\n%s" % (reason_line1, reason_line2),
+                priority=65,
+                sell=sell_price,
+                soc=battery_soc,
+            )
+
+# V8.18: Priority 64-61 — Peak export / auto / arbitrage (SPLIT FOR DEBUGGING)
+# NOTE: Trickle disabled - can interfere with solar during daylight
+# TODO: Consider re-enabling trickle only after sunset (hour >= sunset_hour)
+if 16 <= hour < 21 and sell_price > 0:
+    if battery_soc > active_floor:
+        # NORMAL PATH: Above floor
+        # V8.19: Smart export scheduling - only export during BEST forecast periods
+        available_kwh = final_budget_kwh
+        export_schedule = calculate_export_schedule(sell_disc, available_kwh, CONFIG)
+        
+        # V8.19 FIX: Check if ACTUAL price is good, even if forecast doesn't show it
+        # If actual price beats the forecast best, export now!
+        forecast_best_price = export_schedule.get("best_price", 0) if not export_schedule["should_export"] else sell_price
+        actual_beats_forecast = sell_price >= forecast_best_price and sell_price > 15
+        
+        if (export_schedule["should_export"] or actual_beats_forecast) and sell_price > 10:
+            # Priority 64: Full export (optimal period OR actual price is better)
+            current_action = "export"
+            action_quality = "good"
+            # V8.26: Structured reason format
+            reason_line1 = "💰 %.1fc|🔋%.0f%%/%.0f%%" % (sell_price, battery_soc, active_floor)
+            if actual_beats_forecast and not export_schedule["should_export"]:
+                # Actual price beat forecast
+                reason_line2 = "P64: Peak export (actual > forecast)"
+            else:
+                # Scheduled optimal period
+                reason_line2 = "P64: Peak export (rank %d/%d)" % (
+                    export_schedule.get("rank", 1),
+                    export_schedule.get("total_best", 1)
+                )
+            action = decisions.reason(
+                "export",
+                "%s\n%s" % (reason_line1, reason_line2),
+                priority=64,
+                sell=sell_price,
+                soc=battery_soc,
+            )
+        elif sell_price > 10 and not export_schedule["should_export"]:
+            # Priority 62: Above floor but not optimal period - wait
+            current_action = "auto"
+            action_quality = "warning"
+            best_price = export_schedule.get("best_price", 0)
+            # V8.26: Structured reason format
+            reason_line1 = "⏸️ %.1fc|Best: %.1fc" % (sell_price, best_price)
+            reason_line2 = "P62: Peak wait for better period"
+            action = decisions.reason(
+                "auto",
+                "%s\n%s" % (reason_line1, reason_line2),
+                priority=62,
+                sell=sell_price,
+                soc=battery_soc,
+            )
+    else:
+        # V8.15: NEW ARBITRAGE PATH: Below floor but check if profitable
+        if CONFIG["ENABLE_PEAK_ARBITRAGE"] and sell_price >= CONFIG["ARBITRAGE_MIN_SELL_PRICE"]:  # type: ignore
+            # Calculate survival window
+            available_kwh = (battery_soc - EMERGENCY_FLOOR) / 100 * battery_kwh
+            # Conservative estimate for survival: base load + AC
+            consumption_rate = CONFIG["PURE_BASE_LOAD_KWH_PER_HOUR"] + 2.0  # type: ignore
+            hours_survival = available_kwh / consumption_rate if consumption_rate > 0 else 0
+            
+            if hours_survival >= CONFIG["ARBITRAGE_MIN_SURVIVAL_HOURS"]:  # type: ignore
+                # Check forecast for buyback opportunity
+                reachable_periods = int(hours_survival * 2)  # Convert hours to 30-min periods
+                reachable_forecast = buy_disc[:reachable_periods] if reachable_periods <= len(buy_disc) else buy_disc
+                
+                if reachable_forecast:
+                    min_buyback = min(reachable_forecast)
+                    spread = sell_price - min_buyback
+                    
+                    if spread >= CONFIG["ARBITRAGE_MIN_SPREAD"] and min_buyback <= CONFIG["ARBITRAGE_MAX_BUYBACK"]:
+                        # Priority 63: ARBITRAGE APPROVED!
+                        current_action = "export"
+                        action_quality = "good"
+                        # V8.26: Structured reason format
+                        reason_line1 = "🎯 %.1fc→%.1fc|%.1fh" % (sell_price, min_buyback, hours_survival)
+                        reason_line2 = "P63: Arbitrage (spread %.1fc)" % spread
+                        action = decisions.reason(
+                            "export",
+                            "%s\n%s" % (reason_line1, reason_line2),
+                            priority=63,
+                            sell=sell_price,
+                            soc=battery_soc,
+                        )
+                    else:
+                        # Priority 61: At floor, not profitable arbitrage - let Powston decide
+                        current_action = "auto"
+                        action_quality = "warning"
+                        # V8.26: Structured reason format
+                        reason_line1 = "⏸️ At floor|🔋%.0f%%" % battery_soc
+                        reason_line2 = "P61: At floor - Preserving"
+                        action = decisions.reason(
+                            "auto",
+                            "%s\n%s" % (reason_line1, reason_line2),
+                            priority=61,
+                            sell=sell_price,
+                            soc=battery_soc,
+                        )
+                else:
+                    # Priority 61: No forecast - let Powston decide
+                    current_action = "auto"
+                    action_quality = "warning"
+                    # V8.26: Structured reason format
+                    reason_line1 = "⏸️ At floor|No forecast"
+                    reason_line2 = "P61: At floor - No forecast"
+                    action = decisions.reason(
+                        "auto",
+                        "%s\n%s" % (reason_line1, reason_line2),
+                        priority=61,
+                        sell=sell_price,
+                        soc=battery_soc,
+                    )
+            else:
+                # Priority 61: Unsafe window - let Powston decide
+                current_action = "auto"
+                action_quality = "warning"
+                # V8.26: Structured reason format
+                reason_line1 = "⏸️ At floor|Unsafe window"
+                reason_line2 = "P61: At floor - Unsafe window"
+                action = decisions.reason(
+                    "auto",
+                    "%s\n%s" % (reason_line1, reason_line2),
+                    priority=61,
+                    sell=sell_price,
+                    soc=battery_soc,
+                )
+        else:
+            # Priority 61: Arbitrage disabled or price not high enough - let Powston decide
+            current_action = "auto"
+            action_quality = "warning"
+            # V8.26: Structured reason format
+            reason_line1 = "⏸️ At floor|No arbitrage"
+            reason_line2 = "P61: At floor - Arbitrage disabled"
+            action = decisions.reason(
+                "auto",
+                "%s\n%s" % (reason_line1, reason_line2),
+                priority=61,
+                sell=sell_price,
+                soc=battery_soc,
+            )
+
+# V8.18: Priority 45 — Smart import scheduling (NEW)
+# Buy during cheapest periods to reach 9 PM floor target
+# This prevents emergency expensive imports later
+# V8.19 FIX: Never import during peak hours (4-9 PM)
+is_peak_hours = 16 <= hour < 21
+import_schedule = calculate_import_schedule(hour, battery_soc, floor_at_9pm_soc, buy_disc, CONFIG)
+if import_schedule["should_import"] and not is_peak_hours:
+    current_action = "import"
+    action_quality = "good"
+    # V8.26: Structured reason format
+    reason_line1 = "⬇ %.1fc buy|Need %.0fkWh" % (import_schedule["price"], import_schedule["deficit_kwh"])
+    reason_line2 = "P45: Scheduled import (rank %d/%d)" % (
+        import_schedule.get("rank", 1),
+        import_schedule.get("total_best", 1)
+    )
+    action = decisions.reason(
+        "import",
+        "%s\n%s" % (reason_line1, reason_line2),
+        priority=45,
+        buy=buy_price,
+        soc=battery_soc,
+    )
+
+# Priority 50 — Ultra cheap buyback
+# V8.19 FIX: Never import during peak hours
+if buy_price <= float(CONFIG["ULTRA_CHEAP_BUY_PRICE"]) and battery_soc < 95 and not is_peak_hours:
+    current_action = "import"
+    action_quality = "good"
+    # V8.26: Structured reason format
+    reason_line1 = "⚡ %.2fc buy|🔋%.0f%%" % (buy_price, battery_soc)
+    reason_line2 = "P50: Ultra cheap import"
+    action = decisions.reason(
+        "import",
+        "%s\n%s" % (reason_line1, reason_line2),
+        priority=50,
+        buy=buy_price,
+    )
+
+# V8.15: Priority 40 — AM charge with optimal check (MODIFIED)
+# V8.19: Runs 0-15h (ends at 3 PM, before 4 PM peak start)
+if 0 <= hour < CONFIG["CHARGE_COMPLETE_HOUR"]:  # type: ignore
+    if daytime_deficit_kwh > 2:
+        # V8.15: Only charge if optimal OR running out of time
+        hours_to_peak = 16 - hour
+        
+        # V8.19: Extra safety - ensure we never import during peak
+        if hour < 16 and is_optimal_buy and buy_price <= float(CONFIG["MAX_AM_BUY_PRICE"]):
+            current_action = "import"
+            action_quality = "good"
+            # V8.26: Structured reason format
+            reason_line1 = "⚡ %.2fc buy|🔋%.0f%%" % (buy_price, battery_soc)
+            reason_line2 = "P40: AM charge (optimal)"
+            action = decisions.reason(
+                "import",
+                "%s\n%s" % (reason_line1, reason_line2),
+                priority=40,
+                buy=buy_price,
+            )
+        elif hour < 16 and hours_to_peak <= 6 and battery_soc < 80 and buy_price <= float(CONFIG["MAX_AM_BUY_PRICE"]):
+            # Urgency: Less than 6 hours to peak and battery not full
+            # V8.19: Extra safety - ensure we never import during peak
+            current_action = "import"
+            action_quality = "warning"
+            # V8.26: Structured reason format
+            reason_line1 = "⚠️ %.2fc buy|🔋%.0f%%" % (buy_price, battery_soc)
+            reason_line2 = "P40: AM charge (urgent - %dh to peak)" % hours_to_peak
+            action = decisions.reason(
+                "import",
+                "%s\n%s" % (reason_line1, reason_line2),
+                priority=40,
+                buy=buy_price,
+            )
+
+# Priority 30 — Pre-peak charge
+# V8.19: Runs 15-16h (3-4 PM, before peak start). Safe to import here.
+if CONFIG["CHARGE_COMPLETE_HOUR"] <= hour < peak_start_val:  # type: ignore
+    # Extra safety: ensure peak hasn't started
+    if hour < 16:
+        target_soc = 95
+        if battery_soc < target_soc:
+            if buy_price <= float(CONFIG["PRE_PEAK_MAX_BUY_PRICE"]):
+                if sell_disc:
+                    peak_sell = max(sell_disc[:4])
+                    margin = peak_sell - buy_price
+                    if margin >= float(CONFIG["DESIRED_MARGIN"]):
+                        current_action = "import"
+                        action_quality = "good"
+                        # V8.26: Structured reason format
+                        reason_line1 = "⚡ %.2fc buy|Margin %.1fc" % (buy_price, margin)
+                        reason_line2 = "P30: Pre-peak charge to %.0f%%" % target_soc
+                        action = decisions.reason(
+                            "import",
+                            "%s\n%s" % (reason_line1, reason_line2),
+                            priority=30,
+                            buy=buy_price,
+                        )
+
+# Build final timeline with correct period 0 icon
+period_0_icon = "○"
+
+if current_action == "import":
+    if action_quality == "good":
+        period_0_icon = "⬇✅"
+    else:
+        period_0_icon = "⬇⚠️"
+elif current_action == "export":
+    if action_quality == "good":
+        period_0_icon = "⬆✅"
+    else:
+        period_0_icon = "⬆⚠️"
+elif current_action == "fullstop":
+    period_0_icon = "⬇✅"
+elif current_action == "auto_api_curtail":
+    period_0_icon = "⬆⚠️"
+
+timeline_final = period_0_icon + timeline_future
+
+# V8.26: Build structured reason string
+# Line 1: {metrics}|{timeline}
+# Line 2: P{priority}: {description}
+reason_line1 = "%s|%s" % (metrics_str, timeline_final)
+reason_line2 = "P1: %s - %s" % (time_period, detail_str)
+reason_formatted = "%s\n%s" % (reason_line1, reason_line2)
+
+# Priority 1 — Default auto (ONLY CALL ONCE, AT END, WITH FINAL VALUES)
+action = decisions.reason(
+    current_action,
+    reason_formatted,
+    priority=1,
+    buy=buy_price,
+    sell=sell_price,
+    soc=battery_soc,
+    solar_class=solar_cls,
+    pv_forecast_tomorrow=pv_tomorrow,
+    forecast_source=forecast_source,
+    export_floor_soc=floor["export_floor"],
+    overnight_reserve_soc=floor["overnight_reserve_soc"],
+    deficit_reserve_soc=floor["deficit_reserve_soc"],
+    safety_buffer_soc=floor["safety_buffer_soc"],
+    overnight_kwh=floor["overnight_kwh"],
+    deficit_kwh=floor["deficit_kwh"],
+    safety_kwh=floor["safety_kwh"],
+    export_budget_kwh=floor["budget"],
+    daytime_deficit_kwh=floor["daytime_deficit_kwh"],
+    solar_remaining_kwh=floor["solar_remaining_kwh"],
+    solar_surplus_deficit=floor["solar_surplus_deficit"],
+    buy_forecast_disc=buy_disc,
+    sell_forecast_disc=sell_disc,
+    best_buy_threshold=floor["best_buy_threshold"],
+    best_sell_threshold=floor["best_sell_threshold"],
+    is_optimal_buy=is_optimal_buy,
+    is_optimal_sell=is_optimal_sell,
+    is_optimal_overnight_buy=is_optimal_overnight_buy,
+    is_optimal_overnight_sell=is_optimal_overnight_sell,
+    fip_limitation=feed_in_power_limitation,
+)
